@@ -1,0 +1,61 @@
+{
+  "_comment": "ContentFlow AI Migration Copilot template. Copy to config.local.json and provide real values via .env or a secure local secret store.",
+  "project_name": "ContentFlow AI - Migration Copilot",
+
+  "base_url": "${OTCS_BASE_URL:-https://content-server.example.com/otcs/cs.exe}",
+  "username": "${OTCS_USERNAME:-technical_user}",
+  "password": "${OTCS_PASSWORD}",
+
+  "enterprise_node_id": 2000,
+  "template_id": null,
+  "wksp_type_id": null,
+  "category_id": 123456,
+
+  "ws_sheet": "Workspace",
+  "file_sheet": "File",
+
+  "ws_data_start_row": 4,
+  "file_data_start_row": 0,
+
+  "local_file_root": "${CONTENTFLOW_LOCAL_FILE_ROOT:-}",
+  "on_duplicate": "skip",
+  "request_delay": 0.3,
+  "ssl_verify": true,
+  "dry_run": true,
+
+  "ws_columns": {
+    "location": 0,
+    "title": 1
+  },
+
+  "file_columns": {
+    "location": 0,
+    "title": 1,
+    "src": 2,
+    "mime": 3,
+    "version": 4
+  },
+
+  "category_fields": {
+    "document_type": {
+      "_comment": "Example required metadata field. Replace attr_id and column mapping with the real Content Server category attribute.",
+      "attr_id": 3,
+      "multi_value": false,
+      "required": true,
+      "col": 6,
+      "value_map": {
+        "Contract": "Contract",
+        "Invoice": "Invoice",
+        "Specification": "Specification"
+      }
+    },
+    "country": {
+      "_comment": "Example multi-value field.",
+      "attr_id": 22,
+      "multi_value": true,
+      "required": false,
+      "col_start": 7,
+      "col_end": 10
+    }
+  }
+}

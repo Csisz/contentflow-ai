@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Local secrets/configs
+config/*.local.json
+config/*secret*.json
+*.local.json
+
+# Runtime output
+logs/
+reports/
+output/
+dist/
+build/
+*.spec
+
+# Customer/live data
+*.xlsx
+*.xls
+*.xlsm
+*.pdf
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png
+
+# Keep test fixtures explicitly if needed later
+!tests/fixtures/**/*.xlsx
