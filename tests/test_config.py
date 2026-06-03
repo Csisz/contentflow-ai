@@ -4,6 +4,9 @@ from contentflow_ai.migration.config import load_config
 
 
 def test_load_config_resolves_env_placeholder(tmp_path, monkeypatch):
+    monkeypatch.delenv("OTCS_BASE_URL", raising=False)
+    monkeypatch.delenv("OTCS_USERNAME", raising=False)
+    monkeypatch.delenv("OTCS_PASSWORD", raising=False)
     monkeypatch.setenv("OTCS_PASSWORD", "secret-from-env")
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(json.dumps({
