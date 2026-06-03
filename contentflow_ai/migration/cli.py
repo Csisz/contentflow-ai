@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import load_config
 from .excel_parser import parse_workbook
-from .import_engine import ImportEngine
+from .import_engine import ImportEngine, ImportExecutionReport
 from .logging_setup import setup_logging
 from .reporter import ReportGenerator
 from .validator import PreflightValidator
@@ -81,8 +81,20 @@ def _run_import(args: argparse.Namespace, *, execute: bool) -> int:
         return 1
 
     stats = ImportEngine(cfg).run(workbook, execute=execute)
+    execution_report = ImportExecutionReport.create(
+        cfg=cfg,
+        workbook=workbook,
+        mode="execute" if execute else "dry-run",
+        stats=stats,
+    )
+    execution_paths = ReportGenerator(args.reports_dir).write_execution_all(
+        execution_report,
+        stem=Path(args.xlsx).stem,
+    )
     logger.info("Import stats: %s", stats)
     print(stats)
+    for kind, path in execution_paths.items():
+        print(f"{kind}: {path}")
     print(f"Full log: {full_log}")
     print(f"Error log: {error_log}")
     return 0 if stats.ws_failed == 0 and stats.f_failed == 0 else 1

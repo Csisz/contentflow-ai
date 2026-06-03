@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook
 
+from .import_engine import ImportExecutionReport
 from .models import Issue, PreflightReport
 
 
@@ -22,6 +24,22 @@ class ReportGenerator:
             "xlsx": self.write_xlsx(report.issues, f"{stem}_issues.xlsx"),
         }
         return paths
+
+    def write_execution_all(
+        self,
+        report: ImportExecutionReport,
+        *,
+        stem: str = "migration",
+        timestamp: str | None = None,
+    ) -> dict[str, Path]:
+        timestamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename_stem = f"{stem}_execution_{timestamp}"
+        return {
+            "json": self.write_execution_json(report, f"{filename_stem}.json"),
+            "markdown": self.write_execution_markdown(report, f"{filename_stem}.md"),
+            "csv": self.write_execution_csv(report, f"{filename_stem}.csv"),
+            "xlsx": self.write_execution_xlsx(report, f"{filename_stem}.xlsx"),
+        }
 
     def write_json(self, report: PreflightReport, filename: str) -> Path:
         path = self.output_dir / filename
@@ -119,6 +137,113 @@ class ReportGenerator:
         wb.save(path)
         return path
 
+    def write_execution_json(self, report: ImportExecutionReport, filename: str) -> Path:
+        path = self.output_dir / filename
+        path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def write_execution_markdown(self, report: ImportExecutionReport, filename: str) -> Path:
+        path = self.output_dir / filename
+        summary = report.to_dict()["summary"]
+        lines = [
+            f"# {report.project_name} - Migration Execution Report",
+            "",
+            "## Summary",
+            "",
+            f"- **Mode:** {report.mode}",
+            f"- **Generated at:** {report.generated_at}",
+            f"- **Workbook:** {report.xlsx_path}",
+            f"- **Workspaces created:** {summary['ws_created']}",
+            f"- **Workspaces existing:** {summary['ws_existing']}",
+            f"- **Workspaces failed:** {summary['ws_failed']}",
+            f"- **Files uploaded:** {summary['f_uploaded']}",
+            f"- **Files versioned:** {summary['f_versioned']}",
+            f"- **Files skipped:** {summary['f_skipped']}",
+            f"- **Files failed:** {summary['f_failed']}",
+            "",
+            "## Workspaces",
+            "",
+            "| Row | Placeholder | CS workspace name | Node id | Status | Error |",
+            "|---:|---|---|---:|---|---|",
+        ]
+        for row in report.stats.workspace_rows:
+            lines.append(
+                "| {row} | {title} | {name} | {node_id} | {status} | {error} |".format(
+                    row=row.row_index,
+                    title=_escape_table(row.excel_title),
+                    name=_escape_table(row.workspace_name),
+                    node_id=row.node_id or "",
+                    status=row.status,
+                    error=_escape_table(row.error),
+                )
+            )
+        lines.extend([
+            "",
+            "## Files",
+            "",
+            "| Row | Title | Source | Original target | Remapped target | Parent node id | Status | Error |",
+            "|---:|---|---|---|---|---:|---|---|",
+        ])
+        for row in report.stats.file_rows:
+            lines.append(
+                "| {row} | {title} | {source} | {original} | {remapped} | {parent} | {status} | {error} |".format(
+                    row=row.row_index,
+                    title=_escape_table(row.title),
+                    source=_escape_table(row.source_path),
+                    original=_escape_table(row.original_target_location),
+                    remapped=_escape_table(row.remapped_target_location),
+                    parent=row.parent_node_id or "",
+                    status=row.status,
+                    error=_escape_table(row.error),
+                )
+            )
+        if report.stats.details:
+            lines.extend(["", "## Details", ""])
+            lines.extend(f"- {_escape_table(detail)}" for detail in report.stats.details)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def write_execution_csv(self, report: ImportExecutionReport, filename: str) -> Path:
+        path = self.output_dir / filename
+        fieldnames = _execution_csv_fieldnames()
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in _execution_csv_rows(report):
+                writer.writerow(row)
+        return path
+
+    def write_execution_xlsx(self, report: ImportExecutionReport, filename: str) -> Path:
+        path = self.output_dir / filename
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Workspaces"
+        workspace_headers = ["row_index", "excel_title", "workspace_name", "node_id", "status", "error"]
+        ws.append(workspace_headers)
+        for row in report.stats.workspace_rows:
+            data = row.to_dict()
+            ws.append([data.get(header) for header in workspace_headers])
+        _format_sheet(ws)
+
+        files_ws = wb.create_sheet("Files")
+        file_headers = [
+            "row_index",
+            "title",
+            "source_path",
+            "original_target_location",
+            "remapped_target_location",
+            "parent_node_id",
+            "status",
+            "error",
+        ]
+        files_ws.append(file_headers)
+        for row in report.stats.file_rows:
+            data = row.to_dict()
+            files_ws.append([data.get(header) for header in file_headers])
+        _format_sheet(files_ws)
+        wb.save(path)
+        return path
+
     @staticmethod
     def _recommendation(decision: str) -> str:
         if decision == "GO":
@@ -139,3 +264,60 @@ def _issue_sort_key(issue: Issue) -> tuple[int, int, str]:
 
 def _escape_table(value: str) -> str:
     return (value or "").replace("|", "\\|").replace("\n", " ")
+
+
+def _execution_csv_fieldnames() -> list[str]:
+    return [
+        "record_type",
+        "row_index",
+        "title",
+        "workspace_name",
+        "source_path",
+        "original_target_location",
+        "remapped_target_location",
+        "node_id",
+        "parent_node_id",
+        "status",
+        "error",
+    ]
+
+
+def _execution_csv_rows(report: ImportExecutionReport) -> list[dict]:
+    rows = []
+    for workspace in report.stats.workspace_rows:
+        rows.append({
+            "record_type": "workspace",
+            "row_index": workspace.row_index,
+            "title": workspace.excel_title,
+            "workspace_name": workspace.workspace_name,
+            "source_path": "",
+            "original_target_location": "",
+            "remapped_target_location": "",
+            "node_id": workspace.node_id,
+            "parent_node_id": "",
+            "status": workspace.status,
+            "error": workspace.error,
+        })
+    for file in report.stats.file_rows:
+        rows.append({
+            "record_type": "file",
+            "row_index": file.row_index,
+            "title": file.title,
+            "workspace_name": "",
+            "source_path": file.source_path,
+            "original_target_location": file.original_target_location,
+            "remapped_target_location": file.remapped_target_location,
+            "node_id": "",
+            "parent_node_id": file.parent_node_id,
+            "status": file.status,
+            "error": file.error,
+        })
+    return rows
+
+
+def _format_sheet(ws) -> None:
+    ws.auto_filter.ref = ws.dimensions
+    ws.freeze_panes = "A2"
+    for column_cells in ws.columns:
+        max_length = max(len(str(cell.value or "")) for cell in column_cells)
+        ws.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 70)

@@ -2,8 +2,9 @@ from pathlib import Path
 
 from contentflow_ai.migration.config import MigrationConfig
 from contentflow_ai.migration.cs_client import CSClientError
-from contentflow_ai.migration.import_engine import ImportEngine
+from contentflow_ai.migration.import_engine import ImportEngine, ImportExecutionReport
 from contentflow_ai.migration.models import FileRow, MigrationWorkbook, WorkspaceRow
+from contentflow_ai.migration.reporter import ReportGenerator
 
 
 def make_config() -> MigrationConfig:
@@ -56,6 +57,12 @@ class FakeFailingWorkspaceClient(FakeImportClient):
         raise CSClientError(f"Business Workspace creation failed for '{excel_name}' HTTP 500: failed")
 
 
+class FakeFailingFileClient(FakeImportClient):
+    def upload_file(self, parent_id: int, name: str, local_path: str, mime_hint: str = "") -> str:
+        self.upload_parent_ids.append(parent_id)
+        return "failed"
+
+
 def test_import_engine_uploads_file_under_remapped_workspace_path():
     client = FakeImportClient()
     engine = ImportEngine(make_config(), client=client)
@@ -92,6 +99,18 @@ def test_import_engine_uploads_file_under_remapped_workspace_path():
         r"File location remapped: MIGR\Client\DEV_TEST_001\03_Other documents "
         r"-> MIGR\Client\SPLIC - 00143\03_Other documents"
     ) in stats.details
+    assert stats.workspace_rows[0].row_index == 4
+    assert stats.workspace_rows[0].excel_title == "DEV_TEST_001"
+    assert stats.workspace_rows[0].workspace_name == "SPLIC - 00143"
+    assert stats.workspace_rows[0].node_id == 3001
+    assert stats.workspace_rows[0].status == "created"
+    assert stats.file_rows[0].row_index == 2
+    assert stats.file_rows[0].title == "example.txt"
+    assert stats.file_rows[0].source_path == r"C:\files\example.txt"
+    assert stats.file_rows[0].original_target_location == r"MIGR\Client\DEV_TEST_001\03_Other documents"
+    assert stats.file_rows[0].remapped_target_location == r"MIGR\Client\SPLIC - 00143\03_Other documents"
+    assert stats.file_rows[0].parent_node_id == 102
+    assert stats.file_rows[0].status == "uploaded"
 
 
 def test_import_engine_workspace_api_failure_increments_ws_failed():
@@ -118,6 +137,10 @@ def test_import_engine_workspace_api_failure_increments_ws_failed():
     assert "Workspace row 4 failed: Business Workspace creation failed for 'DEV_TEST_003' HTTP 500: failed" in (
         stats.details
     )
+    assert stats.workspace_rows[0].row_index == 4
+    assert stats.workspace_rows[0].excel_title == "DEV_TEST_003"
+    assert stats.workspace_rows[0].status == "failed"
+    assert stats.workspace_rows[0].error == "Business Workspace creation failed for 'DEV_TEST_003' HTTP 500: failed"
 
 
 def test_import_engine_unresolved_dev_test_file_location_is_not_created_as_folder():
@@ -151,3 +174,69 @@ def test_import_engine_unresolved_dev_test_file_location_is_not_created_as_folde
     assert client.resolved_paths == [r"MIGR\Client"]
     assert client.upload_parent_ids == []
     assert "File row 8 failed: Unresolved workspace placeholder in file location: DEV_TEST_003" in stats.details
+    assert stats.file_rows[0].row_index == 8
+    assert stats.file_rows[0].status == "failed"
+    assert stats.file_rows[0].error == "Unresolved workspace placeholder in file location: DEV_TEST_003"
+
+
+def test_import_engine_file_failed_audit_row():
+    client = FakeFailingFileClient()
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[
+            WorkspaceRow(
+                row_index=4,
+                location=r"MIGR\Client",
+                title="DEV_TEST_001",
+                cat_values={},
+            )
+        ],
+        files=[
+            FileRow(
+                row_index=9,
+                location=r"MIGR\Client\DEV_TEST_001\03_Other documents",
+                title="failed.txt",
+                local_path=r"C:\files\failed.txt",
+            )
+        ],
+        sheet_names=["Workspace", "File"],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.f_failed == 1
+    assert stats.file_rows[0].row_index == 9
+    assert stats.file_rows[0].title == "failed.txt"
+    assert stats.file_rows[0].status == "failed"
+    assert stats.file_rows[0].error == "Upload returned failed"
+
+
+def test_execution_report_files_are_generated(tmp_path):
+    client = FakeImportClient()
+    cfg = make_config()
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[WorkspaceRow(row_index=4, location=r"MIGR\Client", title="DEV_TEST_001")],
+        files=[
+            FileRow(
+                row_index=2,
+                location=r"MIGR\Client\DEV_TEST_001\03_Other documents",
+                title="example.txt",
+                local_path=r"C:\files\example.txt",
+            )
+        ],
+        sheet_names=["Workspace", "File"],
+    )
+    stats = ImportEngine(cfg, client=client).run(workbook, execute=True)
+    report = ImportExecutionReport.create(cfg=cfg, workbook=workbook, mode="execute", stats=stats)
+
+    paths = ReportGenerator(tmp_path).write_execution_all(report, stem="migration", timestamp="20260603_120000")
+
+    assert set(paths) == {"json", "markdown", "csv", "xlsx"}
+    assert paths["json"].name == "migration_execution_20260603_120000.json"
+    assert paths["markdown"].name == "migration_execution_20260603_120000.md"
+    assert paths["csv"].name == "migration_execution_20260603_120000.csv"
+    assert paths["xlsx"].name == "migration_execution_20260603_120000.xlsx"
+    for path in paths.values():
+        assert path.exists()
