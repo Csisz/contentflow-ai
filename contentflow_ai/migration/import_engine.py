@@ -55,7 +55,10 @@ class ImportEngine:
 
         for file in workbook.files:
             try:
+                original_location = file.location
                 location = self.client.remap_file_location(file.location)
+                if location != original_location:
+                    stats.details.append(f"File location remapped: {original_location} -> {location}")
                 parent_id = self.client.resolve_or_create_path(location)
                 result = self.client.upload_file(parent_id, file.title, file.local_path, file.mime_hint)
                 if result == "uploaded":

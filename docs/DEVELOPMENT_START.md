@@ -28,6 +28,10 @@ Az első sprint célja egy tiszta, tesztelhető Python package kialakítása, am
 - `.env.example`: lokális secret minta.
 - `tests/`: első unit tesztek.
 
+## Content Server path planning note
+
+Preflight treats missing target folders as planned creation, not as a generic missing-location warning. The check is read-only: it plans the path under the configured migration root (`enterprise_node_id`) and reports the existing prefix plus the folders that execute mode will create. Execute mode still creates missing folders with `resolve_or_create_path()`.
+
 ## Javasolt fejlesztési sorrend innen
 
 ### Sprint 1/A – Repo tisztítás és futtatás

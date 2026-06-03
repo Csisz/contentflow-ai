@@ -253,14 +253,26 @@ class PreflightValidator:
         unique_locations = sorted({ws.location for ws in workbook.workspaces if ws.location} | {f.location for f in workbook.files if f.location})
         for location in unique_locations:
             try:
-                node_id = client.resolve_existing_path(location)
-                if node_id is None:
-                    issues.append(Issue("warning", "TARGET_LOCATION_MISSING", "content_server",
-                                        "Target location does not currently exist in Content Server.",
-                                        "In execute mode missing folders may be auto-created; review whether this is intended.",
+                plan = client.plan_path_creation(location)
+                if not _plan_value(plan, "full_path_exists") and _plan_value(plan, "missing_parts"):
+                    issues.append(Issue("info", "TARGET_WILL_BE_CREATED", "content_server",
+                                        "Target path does not exist yet and will be created in execute mode.",
+                                        "Configured root: {root_name} ({root_id}); existing until: {existing_until}; "
+                                        "missing parts: {missing_parts}.".format(
+                                            root_name=_plan_value(plan, "root_name"),
+                                            root_id=_plan_value(plan, "root_node_id"),
+                                            existing_until=_plan_value(plan, "existing_until_path"),
+                                            missing_parts=", ".join(_plan_value(plan, "missing_parts")),
+                                        ),
                                         field="location", value=location))
             except Exception as exc:
                 issues.append(Issue("warning", "TARGET_LOCATION_CHECK_FAILED", "content_server",
                                     f"Could not verify target location: {exc}",
                                     "Review path spelling and permissions.", field="location", value=location))
         return issues
+
+
+def _plan_value(plan: object, key: str):
+    if isinstance(plan, dict):
+        return plan[key]
+    return getattr(plan, key)

@@ -19,6 +19,19 @@ class NodeInfo:
     type: int | None = None
 
 
+@dataclass(slots=True)
+class PathCreationPlan:
+    requested_path: str
+    relative_path: str
+    root_node_id: int
+    root_name: str
+    existing_until_node_id: int
+    existing_until_path: str
+    missing_parts: list[str]
+    full_path_exists: bool
+    action: str
+
+
 class CSClientError(RuntimeError):
     pass
 
@@ -28,7 +41,7 @@ class CSClient:
 
     The class contains both read-only helpers for preflight and write methods for
     the later execute mode. Preflight should only call authenticate(), get_node(),
-    find_child() and resolve_existing_path().
+    find_child(), resolve_existing_path() and plan_path_creation().
     """
 
     def __init__(self, cfg: MigrationConfig):
@@ -96,6 +109,47 @@ class CSClient:
         self._cache[cs_path] = current_id
         return current_id
 
+    def plan_path_creation(self, cs_path: str) -> PathCreationPlan:
+        """Plan read-only path resolution under the configured migration root."""
+        root_id = self.cfg.enterprise_node_id
+        root = self.get_node(root_id)
+        if root is None:
+            raise CSClientError(f"Configured enterprise_node_id was not found: {root_id}")
+
+        parts = [part.strip() for part in cs_path.replace("\\", "/").split("/") if part.strip()]
+        relative_parts = self._strip_root_prefixes(parts, root.name)
+        relative_path = "/".join(relative_parts)
+
+        current_id = root_id
+        existing_parts: list[str] = []
+        missing_parts: list[str] = []
+        for part in relative_parts:
+            if missing_parts:
+                missing_parts.append(part)
+                continue
+
+            child = self.find_child(current_id, part)
+            if child is None:
+                missing_parts.append(part)
+                continue
+
+            current_id = child.node_id
+            existing_parts.append(child.name or part)
+
+        full_path_exists = not missing_parts
+        existing_until_path = "/".join([root.name, *existing_parts]) if root.name else "/".join(existing_parts)
+        return PathCreationPlan(
+            requested_path=cs_path,
+            relative_path=relative_path,
+            root_node_id=root_id,
+            root_name=root.name,
+            existing_until_node_id=current_id,
+            existing_until_path=existing_until_path,
+            missing_parts=missing_parts,
+            full_path_exists=full_path_exists,
+            action="exists" if full_path_exists else "create_missing_folders",
+        )
+
     def resolve_or_create_path(self, cs_path: str) -> int:
         """Resolve a path and create missing folders. Use only in execute mode."""
         parts = [part for part in cs_path.replace("\\", "/").split("/") if part]
@@ -157,7 +211,9 @@ class CSClient:
             return node_id, True, excel_name
         result = response.json()["results"]
         node_id = int(result["id"])
-        actual_name = result.get("data", {}).get("properties", {}).get("name") or excel_name
+        actual_name = self._fetch_node_name(node_id)
+        if actual_name is None:
+            actual_name = result.get("data", {}).get("properties", {}).get("name") or excel_name
         self._register_name(excel_name, actual_name)
         return node_id, True, actual_name
 
@@ -222,6 +278,22 @@ class CSClient:
     def _register_name(self, excel_name: str, actual_name: str) -> None:
         self.ws_name_map[normalize_ws_name(excel_name)] = actual_name
         self.ws_name_map[excel_name] = actual_name
+
+    def _fetch_node_name(self, node_id: int) -> str | None:
+        node = self.get_node(node_id)
+        if node and node.name:
+            return node.name
+        return None
+
+    @staticmethod
+    def _strip_root_prefixes(parts: list[str], root_name: str) -> list[str]:
+        root_prefixes = {"enterprise", "enterprise workspace"}
+        if root_name:
+            root_prefixes.add(root_name.casefold())
+        remaining = list(parts)
+        while remaining and remaining[0].casefold() in root_prefixes:
+            remaining.pop(0)
+        return remaining
 
     def _get(self, path: str, **kwargs: Any) -> dict[str, Any]:
         time.sleep(self.cfg.request_delay)
