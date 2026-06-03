@@ -19,6 +19,8 @@
 
   "local_file_root": "${CONTENTFLOW_LOCAL_FILE_ROOT:-}",
   "on_duplicate": "skip",
+  "workspace_creation_mode": "business_workspace",
+  "allow_workspace_folder_fallback": false,
   "request_delay": 0.3,
   "ssl_verify": true,
   "dry_run": true,

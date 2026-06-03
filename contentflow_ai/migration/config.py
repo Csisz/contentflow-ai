@@ -29,6 +29,8 @@ class MigrationConfig:
     category_fields: dict[str, CategoryFieldConfig]
     local_file_root: str = ""
     on_duplicate: str = "skip"
+    workspace_creation_mode: str = "business_workspace"
+    allow_workspace_folder_fallback: bool = False
     request_delay: float = 0.3
     ssl_verify: bool = True
     dry_run: bool = True
@@ -55,6 +57,8 @@ def load_config(config_path: str | Path, *, dry_run: bool | None = None) -> Migr
     defaults = {
         "local_file_root": "",
         "on_duplicate": "skip",
+        "workspace_creation_mode": "business_workspace",
+        "allow_workspace_folder_fallback": False,
         "request_delay": 0.3,
         "ssl_verify": True,
         "dry_run": True,
@@ -112,6 +116,8 @@ def load_config(config_path: str | Path, *, dry_run: bool | None = None) -> Migr
         category_fields=category_fields,
         local_file_root=str(resolved.get("local_file_root", "")),
         on_duplicate=str(resolved.get("on_duplicate", "skip")),
+        workspace_creation_mode=str(resolved.get("workspace_creation_mode", "business_workspace")),
+        allow_workspace_folder_fallback=bool(resolved.get("allow_workspace_folder_fallback", False)),
         request_delay=float(resolved.get("request_delay", 0.3)),
         ssl_verify=bool(resolved.get("ssl_verify", True)),
         dry_run=bool(resolved.get("dry_run", True)),

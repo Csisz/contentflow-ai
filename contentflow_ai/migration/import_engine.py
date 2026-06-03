@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from .config import MigrationConfig
 from .cs_client import CSClient
 from .models import MigrationWorkbook
+
+_DEV_TEST_PATTERN = re.compile(r"^DEV_TEST_", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -39,6 +42,7 @@ class ImportEngine:
             return stats
 
         self.client.authenticate()
+        failed_workspace_titles: set[str] = set()
         for ws in workbook.workspaces:
             try:
                 parent_id = self.client.resolve_or_create_path(ws.location)
@@ -51,6 +55,7 @@ class ImportEngine:
                     stats.details.append(f"Workspace name remapped: {ws.title} -> {actual_name}")
             except Exception as exc:  # noqa: BLE001 - migration batch should continue and collect errors
                 stats.ws_failed += 1
+                failed_workspace_titles.add(ws.title)
                 stats.details.append(f"Workspace row {ws.row_index} failed: {exc}")
 
         for file in workbook.files:
@@ -59,6 +64,9 @@ class ImportEngine:
                 location = self.client.remap_file_location(file.location)
                 if location != original_location:
                     stats.details.append(f"File location remapped: {original_location} -> {location}")
+                unresolved = _find_unresolved_workspace_placeholder(location, failed_workspace_titles)
+                if unresolved:
+                    raise RuntimeError(f"Unresolved workspace placeholder in file location: {unresolved}")
                 parent_id = self.client.resolve_or_create_path(location)
                 result = self.client.upload_file(parent_id, file.title, file.local_path, file.mime_hint)
                 if result == "uploaded":
@@ -73,3 +81,11 @@ class ImportEngine:
                 stats.f_failed += 1
                 stats.details.append(f"File row {file.row_index} failed: {exc}")
         return stats
+
+
+def _find_unresolved_workspace_placeholder(location: str, failed_workspace_titles: set[str]) -> str | None:
+    parts = [part for part in location.replace("\\", "/").split("/") if part]
+    for part in parts:
+        if part in failed_workspace_titles or _DEV_TEST_PATTERN.match(part):
+            return part
+    return None

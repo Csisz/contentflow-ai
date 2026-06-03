@@ -1,5 +1,7 @@
 from contentflow_ai.migration.config import MigrationConfig
-from contentflow_ai.migration.cs_client import CSClient, NodeInfo
+import pytest
+
+from contentflow_ai.migration.cs_client import CSClient, CSClientError, NodeInfo
 
 
 def make_config() -> MigrationConfig:
@@ -38,11 +40,19 @@ class FakeCSClient(CSClient):
     def find_child(self, parent_id: int, name: str) -> NodeInfo | None:
         return self.children.get(parent_id, {}).get(name)
 
+    def create_folder(self, parent_id: int, name: str) -> int:
+        node_id = max(self.nodes) + 1
+        node = NodeInfo(node_id, name, 0)
+        self.nodes[node_id] = node
+        self.children.setdefault(parent_id, {})[name] = node
+        return node_id
+
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload: dict):
+    def __init__(self, status_code: int, payload: dict, text: str = ""):
         self.status_code = status_code
         self._payload = payload
+        self.text = text
 
     def json(self) -> dict:
         return self._payload
@@ -58,13 +68,18 @@ class FakeSession:
 
 
 class FakeBusinessWorkspaceClient(FakeCSClient):
-    def __init__(self, cfg: MigrationConfig, response_payload: dict):
+    def __init__(self, cfg: MigrationConfig, response_payload: dict, status_code: int = 201, text: str = ""):
         super().__init__(cfg)
-        self.session = FakeSession(FakeResponse(201, response_payload))
+        self.session = FakeSession(FakeResponse(status_code, response_payload, text))
         self.nodes[3001] = NodeInfo(3001, "SPLIC - 00143", 848)
+        self.created_folders = []
 
     def find_child(self, parent_id: int, name: str) -> NodeInfo | None:
         return None
+
+    def create_folder(self, parent_id: int, name: str) -> int:
+        self.created_folders.append((parent_id, name))
+        return super().create_folder(parent_id, name)
 
 
 def test_plan_path_creation_skips_enterprise_prefix():
@@ -114,6 +129,46 @@ def test_plan_path_creation_missing_tail_is_planned_under_configured_root():
     assert plan.missing_parts == ["New", "Reports"]
     assert plan.full_path_exists is False
     assert plan.action == "create_missing_folders"
+
+
+def test_resolve_or_create_path_still_creates_intermediate_folders():
+    client = FakeCSClient(make_config())
+
+    node_id = client.resolve_or_create_path(r"MIGR\Client\New\Reports")
+
+    assert node_id == 2004
+    assert client.children[2001]["New"].node_id == 2003
+    assert client.children[2003]["Reports"].node_id == 2004
+
+
+def test_business_workspace_api_failure_does_not_call_create_folder():
+    cfg = make_config()
+    cfg.template_id = 111
+    cfg.wksp_type_id = 222
+    client = FakeBusinessWorkspaceClient(
+        cfg,
+        {"error": "bad request"},
+        status_code=500,
+        text="server generated workspace failed",
+    )
+
+    with pytest.raises(CSClientError) as exc_info:
+        client.create_or_get_workspace(2001, "DEV_TEST_003", {})
+
+    assert client.created_folders == []
+    assert "DEV_TEST_003" in str(exc_info.value)
+    assert "HTTP 500" in str(exc_info.value)
+    assert "server generated workspace failed" in str(exc_info.value)
+
+
+def test_business_workspace_mode_without_template_does_not_create_folder():
+    client = FakeBusinessWorkspaceClient(make_config(), {"results": {"id": 3001}})
+
+    with pytest.raises(CSClientError) as exc_info:
+        client.create_or_get_workspace(2001, "DEV_TEST_003", {})
+
+    assert client.created_folders == []
+    assert "DEV_TEST_003" in str(exc_info.value)
 
 
 def test_create_business_workspace_fetches_actual_node_name_when_response_returns_id_only():

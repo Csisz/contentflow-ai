@@ -186,9 +186,14 @@ class CSClient:
             return existing.node_id, False, existing.name
 
         if self.cfg.template_id is None or self.cfg.wksp_type_id is None:
-            node_id = self.create_folder(parent_id, excel_name)
-            self._register_name(excel_name, excel_name)
-            return node_id, True, excel_name
+            if self._can_create_workspace_as_folder():
+                node_id = self.create_folder(parent_id, excel_name)
+                self._register_name(excel_name, excel_name)
+                return node_id, True, excel_name
+            raise CSClientError(
+                f"Business Workspace creation is configured for '{excel_name}', but template_id or "
+                "wksp_type_id is missing"
+            )
 
         body = {
             "type": 848,
@@ -205,10 +210,10 @@ class CSClient:
             timeout=120,
         )
         if response.status_code not in (200, 201):
-            # Keep legacy-safe fallback, but callers should log this as warning.
-            node_id = self.create_folder(parent_id, excel_name)
-            self._register_name(excel_name, excel_name)
-            return node_id, True, excel_name
+            raise CSClientError(
+                f"Business Workspace creation failed for '{excel_name}' "
+                f"HTTP {response.status_code}: {response.text[:1000]}"
+            )
         result = response.json()["results"]
         node_id = int(result["id"])
         actual_name = self._fetch_node_name(node_id)
@@ -284,6 +289,9 @@ class CSClient:
         if node and node.name:
             return node.name
         return None
+
+    def _can_create_workspace_as_folder(self) -> bool:
+        return self.cfg.workspace_creation_mode == "folder" or self.cfg.allow_workspace_folder_fallback
 
     @staticmethod
     def _strip_root_prefixes(parts: list[str], root_name: str) -> list[str]:
