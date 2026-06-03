@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .config import MigrationConfig
 from .cs_client import CSClient, CSClientError
+from .excel_parser import normalize_category_value
 from .models import Issue, MigrationWorkbook, PreflightReport
 from .utils import get_mime, has_invalid_name_chars, supported_mime_hints
 
@@ -163,6 +164,21 @@ class PreflightValidator:
                               "Fill the mapped Excel column or mark the field non-required in config if appropriate.",
                               ws.row_index, key, True)
                     )
+                if field_cfg.value_map:
+                    values = value if isinstance(value, list) else [value]
+                    for item in values:
+                        if item and not _category_value_is_mapped(str(item), field_cfg.value_map):
+                            issues.append(
+                                Issue(
+                                    "warning",
+                                    "CATEGORY_VALUE_NOT_MAPPED",
+                                    "workspace",
+                                    "Category value has no value_map entry and will be sent as-is.",
+                                    row_index=ws.row_index,
+                                    field=key,
+                                    value=str(item),
+                                )
+                            )
         return issues
 
     def _validate_files(self, workbook: MigrationWorkbook) -> list[Issue]:
@@ -276,3 +292,10 @@ def _plan_value(plan: object, key: str):
     if isinstance(plan, dict):
         return plan[key]
     return getattr(plan, key)
+
+
+def _category_value_is_mapped(value: str, value_map: dict[str, str]) -> bool:
+    normalized = normalize_category_value(value)
+    if normalized in {normalize_category_value(source) for source in value_map}:
+        return True
+    return normalized in {normalize_category_value(target) for target in value_map.values()}

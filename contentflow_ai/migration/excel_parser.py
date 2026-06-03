@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,8 @@ from openpyxl import load_workbook
 from .config import MigrationConfig
 from .models import FileRow, MigrationWorkbook, WorkspaceRow
 from .utils import clean_cell_value
+
+_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 class WorkbookParseError(ValueError):
@@ -48,6 +52,8 @@ def _parse_workspaces(sheet: Any, cfg: MigrationConfig) -> list[WorkspaceRow]:
                 start = field_cfg.col_start if field_cfg.col_start is not None else field_cfg.col
                 end = field_cfg.col_end if field_cfg.col_end is not None else start
                 values = [_safe(row, col) for col in range(int(start), int(end) + 1)] if start is not None else []
+                if field_cfg.value_map:
+                    values = [_apply_value_map(value, field_cfg.value_map) for value in values]
                 cat_values[key] = [value for value in values if value]
             else:
                 value = _safe(row, field_cfg.col)
@@ -114,7 +120,24 @@ def _resolve_local_path(src: str, local_root: str) -> str:
 def _apply_value_map(value: str, value_map: dict[str, str]) -> str:
     if value in value_map:
         return value_map[value]
+
+    trimmed_value = _normalize_category_value_text(value, casefold=False)
     for source, target in value_map.items():
-        if source.lower() == value.lower():
+        if _normalize_category_value_text(source, casefold=False) == trimmed_value:
+            return target
+
+    normalized_value = normalize_category_value(value)
+    for source, target in value_map.items():
+        if normalize_category_value(source) == normalized_value:
             return target
     return value
+
+
+def normalize_category_value(value: str) -> str:
+    return _normalize_category_value_text(value, casefold=True)
+
+
+def _normalize_category_value_text(value: str, *, casefold: bool) -> str:
+    normalized = unicodedata.normalize("NFC", str(value).replace("\u00a0", " "))
+    normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
+    return normalized.casefold() if casefold else normalized
