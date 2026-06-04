@@ -62,3 +62,9 @@ Preflight treats missing target folders as planned creation, not as a generic mi
 3. `ocr/document_classifier.py`: szabályalapú dokumentumtípus-javaslat.
 4. `ocr/metadata_extractor.py`: regex alapú metaadat-javaslat.
 5. Ugyanazt a `CSClient`, `ReportGenerator` és audit szemléletet használja, mint a migrációs modul.
+
+## RelatedWorkspace name resolution note
+
+The optional `RelatedWorkspace` sheet can link Business Workspaces through the official Business Workspaces related items API. For maximum safety, prefer `target_node_id`, because it identifies the target Business Workspace unambiguously.
+
+`target_workspace` and `source_workspace` may also contain an existing Business Workspace name. ContentFlow AI searches `GET /api/v2/businessworkspaces` with `expanded_view=true` and `where_name=<name>`, then accepts only an exact trimmed name match. If exactly one matching Business Workspace is found, its node ID is used. If no exact match is found, the row fails with `RELATED_SOURCE_NOT_FOUND` or `RELATED_TARGET_NOT_FOUND`. If multiple exact matches are found, the row is rejected with `RELATED_SOURCE_AMBIGUOUS` or `RELATED_TARGET_AMBIGUOUS`.

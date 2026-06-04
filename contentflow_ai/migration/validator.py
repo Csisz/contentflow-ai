@@ -319,13 +319,17 @@ class PreflightValidator:
             source_status, source_id = _resolve_related_preflight_ref(client, row.source_workspace, planned_names)
             target_ref = str(row.target_node_id) if row.target_node_id is not None else row.target_workspace
             target_status, target_id = _resolve_related_preflight_ref(client, target_ref, planned_names)
-            if source_status == "missing":
-                issues.append(Issue("error", "RELATED_SOURCE_NOT_FOUND", "related_workspace",
+            if source_status in {"missing", "ambiguous"}:
+                issues.append(Issue("error",
+                                    "RELATED_SOURCE_AMBIGUOUS" if source_status == "ambiguous" else "RELATED_SOURCE_NOT_FOUND",
+                                    "related_workspace",
                                     "Related workspace source could not be resolved.",
                                     "Use a numeric Business Workspace node ID, a workspace from the workbook, or a known workspace name.",
                                     row.row_index, "source_workspace", True, row.source_workspace))
-            if target_status == "missing":
-                issues.append(Issue("error", "RELATED_TARGET_NOT_FOUND", "related_workspace",
+            if target_status in {"missing", "ambiguous"}:
+                issues.append(Issue("error",
+                                    "RELATED_TARGET_AMBIGUOUS" if target_status == "ambiguous" else "RELATED_TARGET_NOT_FOUND",
+                                    "related_workspace",
                                     "Related workspace target could not be resolved.",
                                     "Use target_node_id, a workspace from the workbook, or a known workspace name.",
                                     row.row_index, "target_workspace", True, target_ref))
@@ -372,6 +376,13 @@ def _resolve_related_preflight_ref(client: CSClient, value: str, planned_names: 
     try:
         node_id = int(value)
     except ValueError:
+        resolver = getattr(client, "resolve_business_workspace_reference", None)
+        if callable(resolver):
+            resolved = resolver(value, getattr(client, "ws_node_id_map", {}), getattr(client, "ws_name_map", {}))
+            if resolved.node_id is not None:
+                return "resolved", int(resolved.node_id)
+            if resolved.status == "ambiguous":
+                return "ambiguous", None
         resolver = getattr(client, "resolve_workspace_node_id", None)
         if callable(resolver):
             resolved = resolver(value)

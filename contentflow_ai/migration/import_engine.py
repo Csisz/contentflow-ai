@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .config import MigrationConfig
-from .cs_client import CSClient
+from .cs_client import CSClient, ResolvedWorkspaceRef
 from .models import MigrationWorkbook
 
 _DEV_TEST_PATTERN = re.compile(r"^DEV_TEST_", re.IGNORECASE)
@@ -45,8 +45,10 @@ class RelatedWorkspaceExecutionRow:
     row_index: int
     source_workspace: str
     source_node_id: int | None = None
+    source_resolved_name: str = ""
     target_workspace: str = ""
     target_node_id: int | None = None
+    target_resolved_name: str = ""
     relation_type: str = "child"
     status: str = ""
     error_message: str = ""
@@ -162,12 +164,13 @@ class ImportEngine:
                 stats.related_rows.append(
                     RelatedWorkspaceExecutionRow(
                         row_index=related.row_index,
-                        source_workspace=related.source_workspace,
-                        target_workspace=related.target_workspace,
-                        target_node_id=related.target_node_id,
-                        relation_type=relation_type,
-                        status=status,
-                    )
+                source_workspace=related.source_workspace,
+                target_workspace=related.target_workspace,
+                target_node_id=related.target_node_id,
+                target_resolved_name=str(related.target_node_id or ""),
+                relation_type=relation_type,
+                status=status,
+            )
                 )
             for file in workbook.files:
                 stats.file_rows.append(
@@ -265,19 +268,25 @@ class ImportEngine:
                 stats.related_rows.append(audit_row)
                 continue
             try:
-                source_node_id = _resolve_workspace_ref(self.client, related.source_workspace)
-                target_node_id = related.target_node_id or _resolve_workspace_ref(self.client, related.target_workspace)
-                audit_row.source_node_id = source_node_id
-                audit_row.target_node_id = target_node_id
-                if source_node_id is None:
-                    raise RuntimeError("RELATED_SOURCE_NOT_FOUND")
-                if target_node_id is None:
-                    raise RuntimeError("RELATED_TARGET_NOT_FOUND")
-                if self.client.relation_exists(source_node_id, target_node_id, relation_type):
+                source_ref = _resolve_workspace_ref(self.client, related.source_workspace)
+                target_ref = (
+                    ResolvedWorkspaceRef(related.target_node_id, str(related.target_node_id), "resolved")
+                    if related.target_node_id is not None
+                    else _resolve_workspace_ref(self.client, related.target_workspace)
+                )
+                audit_row.source_node_id = source_ref.node_id
+                audit_row.source_resolved_name = source_ref.name
+                audit_row.target_node_id = target_ref.node_id
+                audit_row.target_resolved_name = target_ref.name
+                if source_ref.node_id is None:
+                    raise RuntimeError(_related_error("SOURCE", source_ref))
+                if target_ref.node_id is None:
+                    raise RuntimeError(_related_error("TARGET", target_ref))
+                if self.client.relation_exists(source_ref.node_id, target_ref.node_id, relation_type):
                     stats.related_existing += 1
                     audit_row.status = "existing"
                 else:
-                    self.client.add_business_workspace_relation(source_node_id, target_node_id, relation_type)
+                    self.client.add_business_workspace_relation(source_ref.node_id, target_ref.node_id, relation_type)
                     stats.related_created += 1
                     audit_row.status = "created"
             except Exception as exc:  # noqa: BLE001
@@ -297,22 +306,32 @@ def _find_unresolved_workspace_placeholder(location: str, failed_workspace_title
     return None
 
 
-def _resolve_workspace_ref(client: CSClient, value: str) -> int | None:
-    resolver = getattr(client, "resolve_workspace_node_id", None)
+def _resolve_workspace_ref(client: CSClient, value: str) -> ResolvedWorkspaceRef:
+    resolver = getattr(client, "resolve_business_workspace_reference", None)
     if callable(resolver):
-        return resolver(value)
+        return resolver(
+            value,
+            getattr(client, "ws_node_id_map", {}),
+            getattr(client, "ws_name_map", {}),
+        )
     value = str(value or "").strip()
     if not value:
-        return None
+        return ResolvedWorkspaceRef(None, status="missing", error_code="NOT_FOUND")
     try:
-        return int(value)
+        return ResolvedWorkspaceRef(int(value), value, "resolved")
     except ValueError:
         pass
     node_map = getattr(client, "ws_node_id_map", {})
     if value in node_map:
-        return int(node_map[value])
+        return ResolvedWorkspaceRef(int(node_map[value]), value, "resolved")
     name_map = getattr(client, "ws_name_map", {})
     actual_name = name_map.get(value)
     if actual_name and actual_name in node_map:
-        return int(node_map[actual_name])
-    return None
+        return ResolvedWorkspaceRef(int(node_map[actual_name]), actual_name, "resolved")
+    return ResolvedWorkspaceRef(None, value, "missing", "NOT_FOUND")
+
+
+def _related_error(side: str, resolved: ResolvedWorkspaceRef) -> str:
+    if resolved.error_code == "AMBIGUOUS":
+        return f"RELATED_{side}_AMBIGUOUS"
+    return f"RELATED_{side}_NOT_FOUND"

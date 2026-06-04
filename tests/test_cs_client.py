@@ -244,3 +244,63 @@ def test_relation_exists_checks_relateditems_before_duplicate_creation():
 
     assert client.relation_exists(3001, 3002, "child") is True
     assert client.relation_exists(3001, 3003, "child") is False
+
+
+def test_search_business_workspaces_by_name_parses_mocked_expanded_response_and_uses_cache():
+    client = CSClient(make_config())
+    session = RelatedSession({
+        "results": [
+            {"data": {"properties": {"id": 3166, "name": "SPLIC - 00166", "type": 848}}},
+            {"data": {"properties": {"id": 9999, "name": "SPLIC - 99999", "type": 848}}},
+        ]
+    })
+    client.session = session
+
+    first = client.search_business_workspaces_by_name("SPLIC - 00166")
+    second = client.search_business_workspaces_by_name("SPLIC - 00166")
+
+    assert [(item.node_id, item.name, item.type) for item in first] == [
+        (3166, "SPLIC - 00166", 848),
+        (9999, "SPLIC - 99999", 848),
+    ]
+    assert second == first
+    assert len(session.get_calls) == 1
+    assert session.get_calls[0][0] == "https://example/otcs/cs.exe/api/v2/businessworkspaces"
+    assert session.get_calls[0][1]["params"] == {
+        "expanded_view": "true",
+        "where_name": "SPLIC - 00166",
+        "limit": 10,
+        "page": 1,
+    }
+
+
+def test_resolve_business_workspace_reference_uses_exact_single_name_match():
+    client = CSClient(make_config())
+    client.session = RelatedSession({
+        "results": [
+            {"data": {"properties": {"id": 1111, "name": "SPLIC - 00166 extra", "type": 848}}},
+            {"data": {"properties": {"id": 3166, "name": "SPLIC - 00166", "type": 848}}},
+        ]
+    })
+
+    resolved = client.resolve_business_workspace_reference("SPLIC - 00166", {}, {})
+
+    assert resolved.node_id == 3166
+    assert resolved.name == "SPLIC - 00166"
+    assert resolved.status == "resolved"
+
+
+def test_resolve_business_workspace_reference_reports_ambiguous_exact_matches():
+    client = CSClient(make_config())
+    client.session = RelatedSession({
+        "results": [
+            {"data": {"properties": {"id": 3166, "name": "SPLIC - 00166", "type": 848}}},
+            {"data": {"properties": {"id": 4166, "name": "SPLIC - 00166", "type": 848}}},
+        ]
+    })
+
+    resolved = client.resolve_business_workspace_reference("SPLIC - 00166", {}, {})
+
+    assert resolved.node_id is None
+    assert resolved.status == "ambiguous"
+    assert resolved.error_code == "AMBIGUOUS"

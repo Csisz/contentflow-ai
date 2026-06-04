@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from contentflow_ai.migration.config import MigrationConfig
-from contentflow_ai.migration.cs_client import CSClientError
+from contentflow_ai.migration.cs_client import CSClientError, ResolvedWorkspaceRef
 from contentflow_ai.migration.import_engine import ImportEngine, ImportExecutionReport
 from contentflow_ai.migration.models import FileRow, MigrationWorkbook, RelatedWorkspaceRow, WorkspaceRow
 from contentflow_ai.migration.reporter import ReportGenerator
@@ -34,6 +34,9 @@ class FakeImportClient:
         self.relations = set()
         self.relation_posts = []
         self._next_ws_id = 3001
+        self.existing_workspace_matches = {}
+        self.search_calls = []
+        self._existing_workspace_cache = {}
 
     def authenticate(self) -> None:
         return None
@@ -74,6 +77,31 @@ class FakeImportClient:
         self.relation_posts.append((bw_id, rel_bw_id, rel_type))
         self.relations.add((bw_id, rel_bw_id, rel_type))
         return {"results": {"ok": True}}
+
+    def resolve_business_workspace_reference(self, ref: str, workspace_id_map: dict, workspace_name_map: dict):
+        value = str(ref or "").strip()
+        if not value:
+            return ResolvedWorkspaceRef(None, status="missing", error_code="NOT_FOUND")
+        if value.isdigit():
+            return ResolvedWorkspaceRef(int(value), value, "resolved")
+        if value in workspace_id_map:
+            return ResolvedWorkspaceRef(int(workspace_id_map[value]), value, "resolved")
+        actual_name = workspace_name_map.get(value)
+        if actual_name and actual_name in workspace_id_map:
+            return ResolvedWorkspaceRef(int(workspace_id_map[actual_name]), actual_name, "resolved")
+        if value in self._existing_workspace_cache:
+            matches = self._existing_workspace_cache[value]
+        else:
+            self.search_calls.append(value)
+            matches = self.existing_workspace_matches.get(value, [])
+            self._existing_workspace_cache[value] = matches
+        exact_matches = [match for match in matches if match[1].strip() == value]
+        if not exact_matches:
+            return ResolvedWorkspaceRef(None, value, "missing", "NOT_FOUND")
+        if len(exact_matches) > 1:
+            return ResolvedWorkspaceRef(None, value, "ambiguous", "AMBIGUOUS")
+        node_id, name = exact_matches[0]
+        return ResolvedWorkspaceRef(node_id, name, "resolved")
 
 
 class FakeFailingWorkspaceClient(FakeImportClient):
@@ -196,6 +224,244 @@ def test_import_engine_related_workspace_uses_numeric_target_node_id_and_skips_e
     assert client.relation_posts == []
     assert stats.related_rows[0].target_node_id == 4444
     assert stats.related_rows[0].status == "existing"
+
+
+def test_import_engine_related_target_node_id_wins_over_target_workspace_name():
+    client = FakeImportClient()
+    client.existing_workspace_matches["SPLIC - 99999"] = [(9999, "SPLIC - 99999")]
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[WorkspaceRow(row_index=4, location=r"MIGR\Client", title="DEV_TEST_001")],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(
+                row_index=2,
+                source_workspace="DEV_TEST_001",
+                target_workspace="SPLIC - 99999",
+                target_node_id=4444,
+                enabled=True,
+            )
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_created == 1
+    assert client.relation_posts == [(3001, 4444, "child")]
+    assert client.search_calls == []
+
+
+def test_import_engine_related_target_workspace_numeric_string_resolves_as_node_id():
+    client = FakeImportClient()
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[WorkspaceRow(row_index=4, location=r"MIGR\Client", title="DEV_TEST_001")],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(row_index=2, source_workspace="DEV_TEST_001", target_workspace="4444", enabled=True)
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_created == 1
+    assert client.relation_posts == [(3001, 4444, "child")]
+    assert stats.related_rows[0].target_resolved_name == "4444"
+
+
+def test_import_engine_related_target_generated_name_resolves_from_current_import_mapping():
+    client = FakeImportClient()
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[
+            WorkspaceRow(row_index=4, location=r"MIGR\Client", title="DEV_TEST_001"),
+            WorkspaceRow(row_index=5, location=r"MIGR\Client", title="DEV_TEST_002"),
+        ],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(
+                row_index=2,
+                source_workspace="DEV_TEST_001",
+                target_workspace="SPLIC - 00144",
+                enabled=True,
+            )
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_created == 1
+    assert client.relation_posts == [(3001, 3002, "child")]
+    assert client.search_calls == []
+
+
+def test_import_engine_related_target_existing_name_resolves_via_search_and_creates_relation():
+    client = FakeImportClient()
+    client.existing_workspace_matches["SPLIC - 00166"] = [(3166, "SPLIC - 00166")]
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[WorkspaceRow(row_index=4, location=r"MIGR\Client", title="DEV_TEST_001")],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(
+                row_index=2,
+                source_workspace="DEV_TEST_001",
+                target_workspace="SPLIC - 00166",
+                enabled=True,
+            )
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_created == 1
+    assert client.relation_posts == [(3001, 3166, "child")]
+    assert stats.related_rows[0].target_resolved_name == "SPLIC - 00166"
+
+
+def test_import_engine_related_target_zero_matches_fails_not_found():
+    client = FakeImportClient()
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[WorkspaceRow(row_index=4, location=r"MIGR\Client", title="DEV_TEST_001")],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(row_index=2, source_workspace="DEV_TEST_001", target_workspace="SPLIC - 00166", enabled=True)
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_failed == 1
+    assert stats.related_rows[0].status == "failed"
+    assert stats.related_rows[0].error_message == "RELATED_TARGET_NOT_FOUND"
+
+
+def test_import_engine_related_target_multiple_exact_matches_fails_ambiguous():
+    client = FakeImportClient()
+    client.existing_workspace_matches["SPLIC - 00166"] = [(3166, "SPLIC - 00166"), (4166, "SPLIC - 00166")]
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[WorkspaceRow(row_index=4, location=r"MIGR\Client", title="DEV_TEST_001")],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(row_index=2, source_workspace="DEV_TEST_001", target_workspace="SPLIC - 00166", enabled=True)
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_failed == 1
+    assert stats.related_rows[0].error_message == "RELATED_TARGET_AMBIGUOUS"
+
+
+def test_import_engine_related_source_existing_name_resolves_via_search():
+    client = FakeImportClient()
+    client.existing_workspace_matches["SPLIC - 00165"] = [(3165, "SPLIC - 00165")]
+    client.existing_workspace_matches["SPLIC - 00166"] = [(3166, "SPLIC - 00166")]
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(
+                row_index=2,
+                source_workspace="SPLIC - 00165",
+                target_workspace="SPLIC - 00166",
+                enabled=True,
+            )
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_created == 1
+    assert client.relation_posts == [(3165, 3166, "child")]
+    assert stats.related_rows[0].source_resolved_name == "SPLIC - 00165"
+
+
+def test_import_engine_related_source_zero_matches_fails_not_found():
+    client = FakeImportClient()
+    client.existing_workspace_matches["SPLIC - 00166"] = [(3166, "SPLIC - 00166")]
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(row_index=2, source_workspace="MISSING", target_workspace="SPLIC - 00166", enabled=True)
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_failed == 1
+    assert stats.related_rows[0].error_message == "RELATED_SOURCE_NOT_FOUND"
+
+
+def test_import_engine_related_source_multiple_exact_matches_fails_ambiguous():
+    client = FakeImportClient()
+    client.existing_workspace_matches["SPLIC - 00165"] = [(3165, "SPLIC - 00165"), (4165, "SPLIC - 00165")]
+    client.existing_workspace_matches["SPLIC - 00166"] = [(3166, "SPLIC - 00166")]
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(
+                row_index=2,
+                source_workspace="SPLIC - 00165",
+                target_workspace="SPLIC - 00166",
+                enabled=True,
+            )
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_failed == 1
+    assert stats.related_rows[0].error_message == "RELATED_SOURCE_AMBIGUOUS"
+
+
+def test_import_engine_repeated_same_target_name_uses_cached_search_result():
+    client = FakeImportClient()
+    client.existing_workspace_matches["SPLIC - 00166"] = [(3166, "SPLIC - 00166")]
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[
+            WorkspaceRow(row_index=4, location=r"MIGR\Client", title="DEV_TEST_001"),
+            WorkspaceRow(row_index=5, location=r"MIGR\Client", title="DEV_TEST_002"),
+        ],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(row_index=2, source_workspace="DEV_TEST_001", target_workspace="SPLIC - 00166", enabled=True),
+            RelatedWorkspaceRow(row_index=3, source_workspace="DEV_TEST_002", target_workspace="SPLIC - 00166", enabled=True),
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_created == 2
+    assert client.search_calls == ["SPLIC - 00166"]
 
 
 def test_import_engine_workspace_api_failure_increments_ws_failed():

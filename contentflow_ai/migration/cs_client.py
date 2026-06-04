@@ -20,6 +20,21 @@ class NodeInfo:
 
 
 @dataclass(slots=True)
+class NodeRef:
+    node_id: int
+    name: str
+    type: int | None = None
+
+
+@dataclass(slots=True)
+class ResolvedWorkspaceRef:
+    node_id: int | None
+    name: str = ""
+    status: str = "missing"
+    error_code: str = ""
+
+
+@dataclass(slots=True)
 class PathCreationPlan:
     requested_path: str
     relative_path: str
@@ -52,6 +67,7 @@ class CSClient:
         self._cache: dict[str, int] = {}
         self.ws_name_map: dict[str, str] = {}
         self.ws_node_id_map: dict[str, int] = {}
+        self._bw_search_cache: dict[str, list[NodeRef]] = {}
 
     def authenticate(self) -> None:
         response = self.session.post(
@@ -241,6 +257,61 @@ class CSClient:
                 return True
         return False
 
+    def search_business_workspaces_by_name(self, name: str) -> list[NodeRef]:
+        trimmed_name = str(name or "").strip()
+        if not trimmed_name:
+            return []
+        cache_key = normalize_ws_name(trimmed_name)
+        if cache_key in self._bw_search_cache:
+            return self._bw_search_cache[cache_key]
+        data = self._get(
+            "/api/v2/businessworkspaces",
+            params={
+                "expanded_view": "true",
+                "where_name": trimmed_name,
+                "limit": 10,
+                "page": 1,
+            },
+        )
+        results = data.get("results", [])
+        if isinstance(results, dict):
+            results = [results]
+        refs = [_node_ref for item in results if (_node_ref := _node_ref_from_result(item)) is not None]
+        self._bw_search_cache[cache_key] = refs
+        return refs
+
+    def resolve_business_workspace_reference(
+        self,
+        ref: str,
+        workspace_id_map: dict,
+        workspace_name_map: dict,
+    ) -> ResolvedWorkspaceRef:
+        value = str(ref or "").strip()
+        if not value:
+            return ResolvedWorkspaceRef(None, status="missing", error_code="NOT_FOUND")
+        try:
+            return ResolvedWorkspaceRef(int(value), value, "resolved")
+        except ValueError:
+            pass
+
+        mapped_id = _lookup_workspace_id(value, workspace_id_map)
+        if mapped_id is not None:
+            return ResolvedWorkspaceRef(mapped_id, value, "resolved")
+
+        actual_name = workspace_name_map.get(value) or workspace_name_map.get(normalize_ws_name(value))
+        if actual_name:
+            mapped_id = _lookup_workspace_id(actual_name, workspace_id_map)
+            if mapped_id is not None:
+                return ResolvedWorkspaceRef(mapped_id, actual_name, "resolved")
+
+        exact_matches = [item for item in self.search_business_workspaces_by_name(value) if item.name.strip() == value]
+        if not exact_matches:
+            return ResolvedWorkspaceRef(None, status="missing", error_code="NOT_FOUND")
+        if len(exact_matches) > 1:
+            return ResolvedWorkspaceRef(None, value, "ambiguous", "AMBIGUOUS")
+        match = exact_matches[0]
+        return ResolvedWorkspaceRef(match.node_id, match.name, "resolved")
+
     def resolve_workspace_node_id(self, workspace: str) -> int | None:
         value = str(workspace or "").strip()
         if not value:
@@ -358,6 +429,42 @@ def _related_item_matches(item: dict[str, Any], rel_bw_id: int, rel_type: str) -
     if related_id != rel_bw_id:
         return False
     return not item_rel_type or item_rel_type.lower() == rel_type.lower()
+
+
+def _node_ref_from_result(item: dict[str, Any]) -> NodeRef | None:
+    props = _find_properties(item)
+    node_id = _find_int_value(props or item, {"id", "node_id"})
+    name = _find_str_value(props or item, {"name"})
+    node_type = _find_int_value(props or item, {"type"})
+    if node_id is None or not name:
+        return None
+    return NodeRef(node_id=node_id, name=name, type=node_type)
+
+
+def _find_properties(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        props = value.get("properties")
+        if isinstance(props, dict):
+            return props
+        for item in value.values():
+            found = _find_properties(item)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_properties(item)
+            if found is not None:
+                return found
+    return None
+
+
+def _lookup_workspace_id(value: str, workspace_id_map: dict) -> int | None:
+    if value in workspace_id_map:
+        return int(workspace_id_map[value])
+    normalized = normalize_ws_name(value)
+    if normalized in workspace_id_map:
+        return int(workspace_id_map[normalized])
+    return None
 
 
 def _find_int_value(value: Any, keys: set[str]) -> int | None:
