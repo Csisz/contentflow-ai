@@ -9,10 +9,12 @@ from typing import Any
 from openpyxl import load_workbook
 
 from .config import MigrationConfig
-from .models import FileRow, MigrationWorkbook, WorkspaceRow
+from .models import FileRow, MigrationWorkbook, RelatedWorkspaceRow, WorkspaceRow
 from .utils import clean_cell_value
 
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+RELATED_WORKSPACE_SHEET = "RelatedWorkspace"
+ENABLED_TRUE_VALUES = {"1", "true", "yes", "y", "igen"}
 
 
 class WorkbookParseError(ValueError):
@@ -31,7 +33,8 @@ def parse_workbook(xlsx_path: str | Path, cfg: MigrationConfig) -> MigrationWork
 
     workspaces = _parse_workspaces(wb[cfg.ws_sheet], cfg)
     files = _parse_files(wb[cfg.file_sheet], cfg)
-    return MigrationWorkbook(path, workspaces, files, sheet_names)
+    related_workspaces = _parse_related_workspaces(wb[RELATED_WORKSPACE_SHEET]) if RELATED_WORKSPACE_SHEET in sheet_names else []
+    return MigrationWorkbook(path, workspaces, files, sheet_names, related_workspaces)
 
 
 def _parse_workspaces(sheet: Any, cfg: MigrationConfig) -> list[WorkspaceRow]:
@@ -99,10 +102,56 @@ def _parse_files(sheet: Any, cfg: MigrationConfig) -> list[FileRow]:
     return rows
 
 
+def _parse_related_workspaces(sheet: Any) -> list[RelatedWorkspaceRow]:
+    rows: list[RelatedWorkspaceRow] = []
+    header_map: dict[str, int] | None = None
+
+    for excel_row_number, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+        if header_map is None:
+            header_map = {_safe_header(value): index for index, value in enumerate(row) if _safe_header(value)}
+            continue
+
+        source_workspace = _safe(row, header_map.get("source_workspace"))
+        target_workspace = _safe(row, header_map.get("target_workspace"))
+        target_node_id = _safe_int(_safe(row, header_map.get("target_node_id")))
+        relation_type = _safe(row, header_map.get("relation_type")).lower()
+        enabled = parse_enabled(_safe(row, header_map.get("enabled")))
+        if not any([source_workspace, target_workspace, target_node_id, relation_type, enabled]):
+            continue
+        rows.append(
+            RelatedWorkspaceRow(
+                row_index=excel_row_number,
+                source_workspace=source_workspace,
+                target_workspace=target_workspace,
+                target_node_id=target_node_id,
+                relation_type=relation_type,
+                enabled=enabled,
+            )
+        )
+    return rows
+
+
 def _safe(row: tuple[Any, ...], col: int | None) -> str:
     if col is None or col < 0 or col >= len(row):
         return ""
     return clean_cell_value(row[col])
+
+
+def _safe_header(value: Any) -> str:
+    return clean_cell_value(value).strip().lower()
+
+
+def _safe_int(value: str) -> int | None:
+    if not value:
+        return None
+    try:
+        return int(float(value))
+    except ValueError:
+        return None
+
+
+def parse_enabled(value: str) -> bool:
+    return clean_cell_value(value).strip().lower() in ENABLED_TRUE_VALUES
 
 
 def _resolve_local_path(src: str, local_root: str) -> str:

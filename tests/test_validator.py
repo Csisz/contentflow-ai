@@ -6,7 +6,7 @@ from openpyxl import Workbook
 from contentflow_ai.migration.config import load_config
 from contentflow_ai.migration.excel_parser import parse_workbook
 from contentflow_ai.migration.cs_client import NodeInfo
-from contentflow_ai.migration.models import CategoryFieldConfig, MigrationWorkbook, WorkspaceRow
+from contentflow_ai.migration.models import CategoryFieldConfig, MigrationWorkbook, RelatedWorkspaceRow, WorkspaceRow
 from contentflow_ai.migration.validator import PreflightValidator
 
 
@@ -162,6 +162,60 @@ def test_preflight_warns_when_category_value_map_does_not_map_value():
     assert warnings[0].field == "pkg_type"
     assert warnings[0].message == "Category value has no value_map entry and will be sent as-is."
     assert warnings[0].value == "Tasak"
+
+
+class RelatedPlanningFakeCSClient(PlanningFakeCSClient):
+    def __init__(self):
+        super().__init__(2000)
+        self.nodes = {2000: NodeInfo(2000, "MIGR", 0), 3001: NodeInfo(3001, "SPLIC - 00143", 848)}
+        self.ws_node_id_map = {"SPLIC - 00143": 3001}
+
+    def get_node(self, node_id: int) -> NodeInfo | None:
+        return self.nodes.get(node_id)
+
+    def resolve_workspace_node_id(self, workspace: str) -> int | None:
+        return self.ws_node_id_map.get(workspace)
+
+    def relation_exists(self, bw_id: int, rel_bw_id: int, rel_type: str = "child") -> bool:
+        return False
+
+
+def test_preflight_unresolved_related_source_and_target_are_reported():
+    cfg = load_config_from_dict({
+        "base_url": "https://example/otcs/cs.exe",
+        "username": "technical_user",
+        "password": "secret",
+        "enterprise_node_id": 2000,
+        "category_id": 123,
+        "ws_sheet": "Workspace",
+        "file_sheet": "File",
+        "ws_columns": {"location": 0, "title": 1},
+        "file_columns": {"location": 0, "title": 1, "src": 2},
+        "category_fields": {},
+    })
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(
+                row_index=7,
+                source_workspace="UNKNOWN_SOURCE",
+                target_workspace="UNKNOWN_TARGET",
+                enabled=True,
+            )
+        ],
+    )
+
+    report = PreflightValidator(cfg, cs_client=RelatedPlanningFakeCSClient()).validate(
+        workbook,
+        include_content_server=True,
+    )
+    codes = {issue.code for issue in report.issues}
+
+    assert "RELATED_SOURCE_NOT_FOUND" in codes
+    assert "RELATED_TARGET_NOT_FOUND" in codes
 
 
 def load_config_from_dict(data, tmp_path=None):

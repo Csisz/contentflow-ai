@@ -57,6 +57,10 @@ class FakeResponse:
     def json(self) -> dict:
         return self._payload
 
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(self.text or f"HTTP {self.status_code}")
+
 
 class FakeSession:
     def __init__(self, response: FakeResponse):
@@ -205,3 +209,38 @@ def test_create_business_workspace_prefers_fetched_node_name_over_placeholder_re
 
     assert actual_name == "SPLIC - 00143"
     assert client.ws_name_map["DEV_TEST_001"] == "SPLIC - 00143"
+
+
+class RelatedSession:
+    def __init__(self, get_payload: dict | None = None):
+        self.headers = {}
+        self.get_payload = get_payload or {"results": []}
+        self.post_calls = []
+        self.get_calls = []
+
+    def get(self, url, **kwargs):
+        self.get_calls.append((url, kwargs))
+        return FakeResponse(200, self.get_payload)
+
+    def post(self, url, **kwargs):
+        self.post_calls.append((url, kwargs))
+        return FakeResponse(201, {"results": {"ok": True}})
+
+
+def test_add_business_workspace_relation_posts_official_relateditems_form_data():
+    client = CSClient(make_config())
+    session = RelatedSession()
+    client.session = session
+
+    client.add_business_workspace_relation(3001, 3002, "parent")
+
+    assert session.post_calls[0][0] == "https://example/otcs/cs.exe/api/v2/businessworkspaces/3001/relateditems"
+    assert session.post_calls[0][1]["data"] == {"rel_bw_id": 3002, "rel_type": "parent"}
+
+
+def test_relation_exists_checks_relateditems_before_duplicate_creation():
+    client = CSClient(make_config())
+    client.session = RelatedSession({"results": [{"rel_bw_id": 3002, "rel_type": "child"}]})
+
+    assert client.relation_exists(3001, 3002, "child") is True
+    assert client.relation_exists(3001, 3003, "child") is False

@@ -3,7 +3,7 @@ from pathlib import Path
 from contentflow_ai.migration.config import MigrationConfig
 from contentflow_ai.migration.cs_client import CSClientError
 from contentflow_ai.migration.import_engine import ImportEngine, ImportExecutionReport
-from contentflow_ai.migration.models import FileRow, MigrationWorkbook, WorkspaceRow
+from contentflow_ai.migration.models import FileRow, MigrationWorkbook, RelatedWorkspaceRow, WorkspaceRow
 from contentflow_ai.migration.reporter import ReportGenerator
 
 
@@ -28,8 +28,12 @@ def make_config() -> MigrationConfig:
 class FakeImportClient:
     def __init__(self):
         self.ws_name_map = {}
+        self.ws_node_id_map = {}
         self.resolved_paths = []
         self.upload_parent_ids = []
+        self.relations = set()
+        self.relation_posts = []
+        self._next_ws_id = 3001
 
     def authenticate(self) -> None:
         return None
@@ -39,8 +43,15 @@ class FakeImportClient:
         return len(self.resolved_paths) + 100
 
     def create_or_get_workspace(self, parent_id: int, excel_name: str, cat_values: dict):
-        self.ws_name_map[excel_name] = "SPLIC - 00143"
-        return 3001, True, "SPLIC - 00143"
+        node_id = self.ws_node_id_map.get(excel_name)
+        if node_id is None:
+            node_id = self._next_ws_id
+            self._next_ws_id += 1
+        actual_name = f"SPLIC - {node_id - 2858:05d}"
+        self.ws_name_map[excel_name] = actual_name
+        self.ws_node_id_map[excel_name] = node_id
+        self.ws_node_id_map[actual_name] = node_id
+        return node_id, True, actual_name
 
     def remap_file_location(self, location: str) -> str:
         for excel_name, actual_name in self.ws_name_map.items():
@@ -50,6 +61,19 @@ class FakeImportClient:
     def upload_file(self, parent_id: int, name: str, local_path: str, mime_hint: str = "") -> str:
         self.upload_parent_ids.append(parent_id)
         return "uploaded"
+
+    def resolve_workspace_node_id(self, workspace: str) -> int | None:
+        if str(workspace).isdigit():
+            return int(workspace)
+        return self.ws_node_id_map.get(workspace)
+
+    def relation_exists(self, bw_id: int, rel_bw_id: int, rel_type: str = "child") -> bool:
+        return (bw_id, rel_bw_id, rel_type) in self.relations
+
+    def add_business_workspace_relation(self, bw_id: int, rel_bw_id: int, rel_type: str = "child"):
+        self.relation_posts.append((bw_id, rel_bw_id, rel_type))
+        self.relations.add((bw_id, rel_bw_id, rel_type))
+        return {"results": {"ok": True}}
 
 
 class FakeFailingWorkspaceClient(FakeImportClient):
@@ -111,6 +135,67 @@ def test_import_engine_uploads_file_under_remapped_workspace_path():
     assert stats.file_rows[0].remapped_target_location == r"MIGR\Client\SPLIC - 00143\03_Other documents"
     assert stats.file_rows[0].parent_node_id == 102
     assert stats.file_rows[0].status == "uploaded"
+
+
+def test_import_engine_related_workspace_resolves_placeholders_and_defaults_to_child():
+    client = FakeImportClient()
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[
+            WorkspaceRow(row_index=4, location=r"MIGR\Client", title="DEV_TEST_001"),
+            WorkspaceRow(row_index=5, location=r"MIGR\Client", title="DEV_TEST_002"),
+        ],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(
+                row_index=2,
+                source_workspace="DEV_TEST_001",
+                target_workspace="DEV_TEST_002",
+                enabled=True,
+            )
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_created == 1
+    assert client.relation_posts == [(3001, 3002, "child")]
+    assert stats.related_rows[0].source_node_id == 3001
+    assert stats.related_rows[0].target_node_id == 3002
+    assert stats.related_rows[0].relation_type == "child"
+    assert stats.related_rows[0].status == "created"
+
+
+def test_import_engine_related_workspace_uses_numeric_target_node_id_and_skips_existing():
+    client = FakeImportClient()
+    client.relations.add((3001, 4444, "parent"))
+    engine = ImportEngine(make_config(), client=client)
+    workbook = MigrationWorkbook(
+        xlsx_path=Path("migration.xlsx"),
+        workspaces=[WorkspaceRow(row_index=4, location=r"MIGR\Client", title="DEV_TEST_001")],
+        files=[],
+        sheet_names=["Workspace", "File", "RelatedWorkspace"],
+        related_workspaces=[
+            RelatedWorkspaceRow(
+                row_index=2,
+                source_workspace="DEV_TEST_001",
+                target_workspace="",
+                target_node_id=4444,
+                relation_type="parent",
+                enabled=True,
+            )
+        ],
+    )
+
+    stats = engine.run(workbook, execute=True)
+
+    assert stats.related_existing == 1
+    assert stats.related_created == 0
+    assert client.relation_posts == []
+    assert stats.related_rows[0].target_node_id == 4444
+    assert stats.related_rows[0].status == "existing"
 
 
 def test_import_engine_workspace_api_failure_increments_ws_failed():

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 Severity = Literal["error", "warning", "info"]
-RowType = Literal["config", "workbook", "workspace", "file", "content_server"]
+RowType = Literal["config", "workbook", "workspace", "file", "related_workspace", "content_server"]
 
 
 @dataclass(slots=True)
@@ -42,11 +42,22 @@ class FileRow:
 
 
 @dataclass(slots=True)
+class RelatedWorkspaceRow:
+    row_index: int
+    source_workspace: str
+    target_workspace: str
+    target_node_id: int | None = None
+    relation_type: str = ""
+    enabled: bool = False
+
+
+@dataclass(slots=True)
 class MigrationWorkbook:
     xlsx_path: Path
     workspaces: list[WorkspaceRow]
     files: list[FileRow]
     sheet_names: list[str]
+    related_workspaces: list[RelatedWorkspaceRow] = field(default_factory=list)
 
 
 @dataclass(slots=True)

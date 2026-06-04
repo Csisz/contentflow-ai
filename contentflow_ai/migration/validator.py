@@ -26,6 +26,7 @@ class PreflightValidator:
         issues.extend(self._validate_workbook_shape(workbook))
         issues.extend(self._validate_workspaces(workbook))
         issues.extend(self._validate_files(workbook))
+        issues.extend(self._validate_related_workspaces(workbook))
         if include_content_server:
             issues.extend(self._validate_content_server(workbook))
 
@@ -249,6 +250,26 @@ class PreflightValidator:
                                     "This may be intentional; otherwise check duplicate input rows.", rows[0], "local_path", value=local_path))
         return issues
 
+    def _validate_related_workspaces(self, workbook: MigrationWorkbook) -> list[Issue]:
+        issues: list[Issue] = []
+        for row in workbook.related_workspaces:
+            if not row.enabled:
+                continue
+            if not row.source_workspace:
+                issues.append(Issue("error", "MISSING_RELATED_SOURCE", "related_workspace",
+                                    "Related workspace source is empty.",
+                                    "Fill source_workspace or disable the row.", row.row_index, "source_workspace", True))
+            if not row.target_workspace and row.target_node_id is None:
+                issues.append(Issue("error", "MISSING_RELATED_TARGET", "related_workspace",
+                                    "Related workspace target is empty.",
+                                    "Fill target_workspace, target_node_id, or disable the row.", row.row_index, "target_workspace", True))
+            if row.relation_type and row.relation_type not in {"child", "parent"}:
+                issues.append(Issue("error", "INVALID_RELATED_RELATION_TYPE", "related_workspace",
+                                    "Related workspace relation_type must be child or parent.",
+                                    "Use child, parent, or leave it empty for child.", row.row_index, "relation_type", True,
+                                    row.relation_type))
+        return issues
+
     def _validate_content_server(self, workbook: MigrationWorkbook) -> list[Issue]:
         issues: list[Issue] = []
         client = self.cs_client or CSClient(self.cfg)
@@ -285,6 +306,49 @@ class PreflightValidator:
                 issues.append(Issue("warning", "TARGET_LOCATION_CHECK_FAILED", "content_server",
                                     f"Could not verify target location: {exc}",
                                     "Review path spelling and permissions.", field="location", value=location))
+        issues.extend(self._validate_related_content_server(workbook, client))
+        return issues
+
+    def _validate_related_content_server(self, workbook: MigrationWorkbook, client: CSClient) -> list[Issue]:
+        issues: list[Issue] = []
+        planned_names = {ws.title for ws in workbook.workspaces if ws.title}
+        for row in workbook.related_workspaces:
+            if not row.enabled:
+                continue
+            relation_type = row.relation_type or "child"
+            source_status, source_id = _resolve_related_preflight_ref(client, row.source_workspace, planned_names)
+            target_ref = str(row.target_node_id) if row.target_node_id is not None else row.target_workspace
+            target_status, target_id = _resolve_related_preflight_ref(client, target_ref, planned_names)
+            if source_status == "missing":
+                issues.append(Issue("error", "RELATED_SOURCE_NOT_FOUND", "related_workspace",
+                                    "Related workspace source could not be resolved.",
+                                    "Use a numeric Business Workspace node ID, a workspace from the workbook, or a known workspace name.",
+                                    row.row_index, "source_workspace", True, row.source_workspace))
+            if target_status == "missing":
+                issues.append(Issue("error", "RELATED_TARGET_NOT_FOUND", "related_workspace",
+                                    "Related workspace target could not be resolved.",
+                                    "Use target_node_id, a workspace from the workbook, or a known workspace name.",
+                                    row.row_index, "target_workspace", True, target_ref))
+            if source_id is None or target_id is None:
+                if source_status == "planned" or target_status == "planned":
+                    issues.append(Issue("info", "RELATED_WILL_BE_CREATED", "related_workspace",
+                                        "Related workspace relation will be evaluated after workspace creation.",
+                                        "At least one side is a workspace from this workbook and will be known in execute mode.",
+                                        row.row_index, "relation_type", value=relation_type))
+                continue
+            try:
+                exists = client.relation_exists(source_id, target_id, relation_type)
+                issues.append(Issue("warning" if exists else "info",
+                                    "RELATED_ALREADY_EXISTS" if exists else "RELATED_WILL_BE_CREATED",
+                                    "related_workspace",
+                                    "Related workspace relation already exists." if exists else "Related workspace relation will be created.",
+                                    "Execute mode will not create duplicates." if exists else "Execute mode will call the official Business Workspaces relateditems API.",
+                                    row.row_index, "relation_type", value=relation_type))
+            except Exception as exc:
+                issues.append(Issue("warning", "RELATED_CHECK_FAILED", "related_workspace",
+                                    f"Could not verify related workspace relation: {exc}",
+                                    "Review source/target IDs and permissions.", row.row_index, "relation_type",
+                                    value=relation_type))
         return issues
 
 
@@ -299,3 +363,22 @@ def _category_value_is_mapped(value: str, value_map: dict[str, str]) -> bool:
     if normalized in {normalize_category_value(source) for source in value_map}:
         return True
     return normalized in {normalize_category_value(target) for target in value_map.values()}
+
+
+def _resolve_related_preflight_ref(client: CSClient, value: str, planned_names: set[str]) -> tuple[str, int | None]:
+    value = str(value or "").strip()
+    if not value:
+        return "missing", None
+    try:
+        node_id = int(value)
+    except ValueError:
+        resolver = getattr(client, "resolve_workspace_node_id", None)
+        if callable(resolver):
+            resolved = resolver(value)
+            if resolved is not None:
+                return "resolved", int(resolved)
+        if value in planned_names:
+            return "planned", None
+        return "missing", None
+    node = client.get_node(node_id)
+    return ("resolved", node_id) if node is not None else ("missing", None)

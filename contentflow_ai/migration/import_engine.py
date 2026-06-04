@@ -41,6 +41,21 @@ class FileExecutionRow:
 
 
 @dataclass(slots=True)
+class RelatedWorkspaceExecutionRow:
+    row_index: int
+    source_workspace: str
+    source_node_id: int | None = None
+    target_workspace: str = ""
+    target_node_id: int | None = None
+    relation_type: str = "child"
+    status: str = ""
+    error_message: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class ImportStats:
     ws_created: int = 0
     ws_existing: int = 0
@@ -49,9 +64,14 @@ class ImportStats:
     f_versioned: int = 0
     f_skipped: int = 0
     f_failed: int = 0
+    related_created: int = 0
+    related_existing: int = 0
+    related_failed: int = 0
+    related_skipped: int = 0
     details: list[str] = field(default_factory=list)
     workspace_rows: list[WorkspaceExecutionRow] = field(default_factory=list)
     file_rows: list[FileExecutionRow] = field(default_factory=list)
+    related_rows: list[RelatedWorkspaceExecutionRow] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -93,9 +113,14 @@ class ImportExecutionReport:
                 "f_versioned": self.stats.f_versioned,
                 "f_skipped": self.stats.f_skipped,
                 "f_failed": self.stats.f_failed,
+                "related_created": self.stats.related_created,
+                "related_existing": self.stats.related_existing,
+                "related_failed": self.stats.related_failed,
+                "related_skipped": self.stats.related_skipped,
             },
             "details": self.stats.details,
             "workspaces": [row.to_dict() for row in self.stats.workspace_rows],
+            "related_workspaces": [row.to_dict() for row in self.stats.related_rows],
             "files": [row.to_dict() for row in self.stats.file_rows],
         }
 
@@ -124,6 +149,24 @@ class ImportEngine:
                         excel_title=ws.title,
                         workspace_name=ws.title,
                         status="planned",
+                    )
+                )
+            for related in workbook.related_workspaces:
+                relation_type = related.relation_type or "child"
+                if not related.enabled:
+                    stats.related_skipped += 1
+                    status = "skipped"
+                else:
+                    stats.related_created += 1
+                    status = "planned"
+                stats.related_rows.append(
+                    RelatedWorkspaceExecutionRow(
+                        row_index=related.row_index,
+                        source_workspace=related.source_workspace,
+                        target_workspace=related.target_workspace,
+                        target_node_id=related.target_node_id,
+                        relation_type=relation_type,
+                        status=status,
                     )
                 )
             for file in workbook.files:
@@ -164,6 +207,8 @@ class ImportEngine:
             finally:
                 stats.workspace_rows.append(audit_row)
 
+        self._process_related_workspaces(workbook, stats)
+
         for file in workbook.files:
             audit_row = FileExecutionRow(
                 row_index=file.row_index,
@@ -203,10 +248,71 @@ class ImportEngine:
                 stats.file_rows.append(audit_row)
         return stats
 
+    def _process_related_workspaces(self, workbook: MigrationWorkbook, stats: ImportStats) -> None:
+        for related in workbook.related_workspaces:
+            relation_type = related.relation_type or "child"
+            audit_row = RelatedWorkspaceExecutionRow(
+                row_index=related.row_index,
+                source_workspace=related.source_workspace,
+                target_workspace=related.target_workspace,
+                target_node_id=related.target_node_id,
+                relation_type=relation_type,
+            )
+            if not related.enabled:
+                stats.related_skipped += 1
+                audit_row.status = "skipped"
+                audit_row.error_message = "Relation row is disabled."
+                stats.related_rows.append(audit_row)
+                continue
+            try:
+                source_node_id = _resolve_workspace_ref(self.client, related.source_workspace)
+                target_node_id = related.target_node_id or _resolve_workspace_ref(self.client, related.target_workspace)
+                audit_row.source_node_id = source_node_id
+                audit_row.target_node_id = target_node_id
+                if source_node_id is None:
+                    raise RuntimeError("RELATED_SOURCE_NOT_FOUND")
+                if target_node_id is None:
+                    raise RuntimeError("RELATED_TARGET_NOT_FOUND")
+                if self.client.relation_exists(source_node_id, target_node_id, relation_type):
+                    stats.related_existing += 1
+                    audit_row.status = "existing"
+                else:
+                    self.client.add_business_workspace_relation(source_node_id, target_node_id, relation_type)
+                    stats.related_created += 1
+                    audit_row.status = "created"
+            except Exception as exc:  # noqa: BLE001
+                stats.related_failed += 1
+                audit_row.status = "failed"
+                audit_row.error_message = str(exc)
+                stats.details.append(f"RelatedWorkspace row {related.row_index} failed: {exc}")
+            finally:
+                stats.related_rows.append(audit_row)
+
 
 def _find_unresolved_workspace_placeholder(location: str, failed_workspace_titles: set[str]) -> str | None:
     parts = [part for part in location.replace("\\", "/").split("/") if part]
     for part in parts:
         if part in failed_workspace_titles or _DEV_TEST_PATTERN.match(part):
             return part
+    return None
+
+
+def _resolve_workspace_ref(client: CSClient, value: str) -> int | None:
+    resolver = getattr(client, "resolve_workspace_node_id", None)
+    if callable(resolver):
+        return resolver(value)
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    node_map = getattr(client, "ws_node_id_map", {})
+    if value in node_map:
+        return int(node_map[value])
+    name_map = getattr(client, "ws_name_map", {})
+    actual_name = name_map.get(value)
+    if actual_name and actual_name in node_map:
+        return int(node_map[actual_name])
     return None

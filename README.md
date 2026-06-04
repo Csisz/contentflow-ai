@@ -69,6 +69,20 @@ This authenticates to Content Server and verifies target paths where possible. I
 python -m contentflow_ai.migration.cli dry-run path\to\migration.xlsx --config config\config.local.json
 ```
 
+## Optional related workspace sheet
+
+To create official OpenText Business Workspace relations, add an optional `RelatedWorkspace` sheet:
+
+| Column | Meaning |
+|---|---|
+| `source_workspace` | Source Business Workspace placeholder/name, generated name, or numeric node ID. |
+| `target_workspace` | Target Business Workspace placeholder/name when `target_node_id` is empty. |
+| `target_node_id` | Optional numeric target Business Workspace node ID. |
+| `relation_type` | Optional `child` or `parent`; defaults to `child`. |
+| `enabled` | Process only rows set to `1`, `true`, `yes`, `y`, or `igen`. |
+
+Execute mode uses `POST /api/v2/businessworkspaces/{bw_id}/relateditems` with form fields `rel_bw_id` and `rel_type`. It does not create folders or normal Content Server nodes for related items.
+
 ## Execute mode
 
 Execution is intentionally guarded:

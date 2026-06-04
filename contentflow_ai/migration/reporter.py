@@ -160,6 +160,10 @@ class ReportGenerator:
             f"- **Files versioned:** {summary['f_versioned']}",
             f"- **Files skipped:** {summary['f_skipped']}",
             f"- **Files failed:** {summary['f_failed']}",
+            f"- **Related workspaces created:** {summary['related_created']}",
+            f"- **Related workspaces existing:** {summary['related_existing']}",
+            f"- **Related workspaces skipped:** {summary['related_skipped']}",
+            f"- **Related workspaces failed:** {summary['related_failed']}",
             "",
             "## Workspaces",
             "",
@@ -175,6 +179,26 @@ class ReportGenerator:
                     node_id=row.node_id or "",
                     status=row.status,
                     error=_escape_table(row.error),
+                )
+            )
+        lines.extend([
+            "",
+            "## Related Workspaces",
+            "",
+            "| Row | Source | Source node id | Target | Target node id | Relation type | Status | Error |",
+            "|---:|---|---:|---|---:|---|---|---|",
+        ])
+        for row in report.stats.related_rows:
+            lines.append(
+                "| {row} | {source} | {source_id} | {target} | {target_id} | {rel_type} | {status} | {error} |".format(
+                    row=row.row_index,
+                    source=_escape_table(row.source_workspace),
+                    source_id=row.source_node_id or "",
+                    target=_escape_table(row.target_workspace),
+                    target_id=row.target_node_id or "",
+                    rel_type=_escape_table(row.relation_type),
+                    status=row.status,
+                    error=_escape_table(row.error_message),
                 )
             )
         lines.extend([
@@ -241,6 +265,23 @@ class ReportGenerator:
             data = row.to_dict()
             files_ws.append([data.get(header) for header in file_headers])
         _format_sheet(files_ws)
+
+        related_ws = wb.create_sheet("RelatedWorkspaces")
+        related_headers = [
+            "row_index",
+            "source_workspace",
+            "source_node_id",
+            "target_workspace",
+            "target_node_id",
+            "relation_type",
+            "status",
+            "error_message",
+        ]
+        related_ws.append(related_headers)
+        for row in report.stats.related_rows:
+            data = row.to_dict()
+            related_ws.append([data.get(header) for header in related_headers])
+        _format_sheet(related_ws)
         wb.save(path)
         return path
 
@@ -277,6 +318,11 @@ def _execution_csv_fieldnames() -> list[str]:
         "remapped_target_location",
         "node_id",
         "parent_node_id",
+        "source_workspace",
+        "source_node_id",
+        "target_workspace",
+        "target_node_id",
+        "relation_type",
         "status",
         "error",
     ]
@@ -295,8 +341,32 @@ def _execution_csv_rows(report: ImportExecutionReport) -> list[dict]:
             "remapped_target_location": "",
             "node_id": workspace.node_id,
             "parent_node_id": "",
+            "source_workspace": "",
+            "source_node_id": "",
+            "target_workspace": "",
+            "target_node_id": "",
+            "relation_type": "",
             "status": workspace.status,
             "error": workspace.error,
+        })
+    for related in report.stats.related_rows:
+        rows.append({
+            "record_type": "related_workspace",
+            "row_index": related.row_index,
+            "title": "",
+            "workspace_name": "",
+            "source_path": "",
+            "original_target_location": "",
+            "remapped_target_location": "",
+            "node_id": "",
+            "parent_node_id": "",
+            "source_workspace": related.source_workspace,
+            "source_node_id": related.source_node_id,
+            "target_workspace": related.target_workspace,
+            "target_node_id": related.target_node_id,
+            "relation_type": related.relation_type,
+            "status": related.status,
+            "error": related.error_message,
         })
     for file in report.stats.file_rows:
         rows.append({
@@ -309,6 +379,11 @@ def _execution_csv_rows(report: ImportExecutionReport) -> list[dict]:
             "remapped_target_location": file.remapped_target_location,
             "node_id": "",
             "parent_node_id": file.parent_node_id,
+            "source_workspace": "",
+            "source_node_id": "",
+            "target_workspace": "",
+            "target_node_id": "",
+            "relation_type": "",
             "status": file.status,
             "error": file.error,
         })

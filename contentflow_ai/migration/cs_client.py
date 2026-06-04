@@ -51,6 +51,7 @@ class CSClient:
         self.session.headers.update({"Accept": "application/json"})
         self._cache: dict[str, int] = {}
         self.ws_name_map: dict[str, str] = {}
+        self.ws_node_id_map: dict[str, int] = {}
 
     def authenticate(self) -> None:
         response = self.session.post(
@@ -182,13 +183,13 @@ class CSClient:
     def create_or_get_workspace(self, parent_id: int, excel_name: str, cat_values: dict[str, Any]) -> tuple[int, bool, str]:
         existing = self.find_child(parent_id, excel_name)
         if existing:
-            self._register_name(excel_name, existing.name)
+            self._register_workspace(excel_name, existing.name, existing.node_id)
             return existing.node_id, False, existing.name
 
         if self.cfg.template_id is None or self.cfg.wksp_type_id is None:
             if self._can_create_workspace_as_folder():
                 node_id = self.create_folder(parent_id, excel_name)
-                self._register_name(excel_name, excel_name)
+                self._register_workspace(excel_name, excel_name, node_id)
                 return node_id, True, excel_name
             raise CSClientError(
                 f"Business Workspace creation is configured for '{excel_name}', but template_id or "
@@ -219,8 +220,36 @@ class CSClient:
         actual_name = self._fetch_node_name(node_id)
         if actual_name is None:
             actual_name = result.get("data", {}).get("properties", {}).get("name") or excel_name
-        self._register_name(excel_name, actual_name)
+        self._register_workspace(excel_name, actual_name, node_id)
         return node_id, True, actual_name
+
+    def get_related_workspaces(self, bw_id: int, rel_type: str | None = None) -> list[dict[str, Any]]:
+        params = {"rel_type": rel_type} if rel_type else None
+        data = self._get(f"/api/v2/businessworkspaces/{bw_id}/relateditems", params=params)
+        results = data.get("results", [])
+        return results if isinstance(results, list) else [results]
+
+    def add_business_workspace_relation(self, bw_id: int, rel_bw_id: int, rel_type: str = "child") -> dict[str, Any]:
+        return self._post(
+            f"/api/v2/businessworkspaces/{bw_id}/relateditems",
+            data={"rel_bw_id": int(rel_bw_id), "rel_type": rel_type or "child"},
+        )
+
+    def relation_exists(self, bw_id: int, rel_bw_id: int, rel_type: str = "child") -> bool:
+        for item in self.get_related_workspaces(bw_id, rel_type=rel_type):
+            if _related_item_matches(item, int(rel_bw_id), rel_type or "child"):
+                return True
+        return False
+
+    def resolve_workspace_node_id(self, workspace: str) -> int | None:
+        value = str(workspace or "").strip()
+        if not value:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        return self.ws_node_id_map.get(value) or self.ws_node_id_map.get(normalize_ws_name(value))
 
     def apply_category(self, node_id: int, cat_values: dict[str, Any]) -> bool:
         body = {"categories": self._build_category_data(cat_values)}
@@ -284,6 +313,13 @@ class CSClient:
         self.ws_name_map[normalize_ws_name(excel_name)] = actual_name
         self.ws_name_map[excel_name] = actual_name
 
+    def _register_workspace(self, excel_name: str, actual_name: str, node_id: int) -> None:
+        self._register_name(excel_name, actual_name)
+        self.ws_node_id_map[excel_name] = int(node_id)
+        self.ws_node_id_map[normalize_ws_name(excel_name)] = int(node_id)
+        self.ws_node_id_map[actual_name] = int(node_id)
+        self.ws_node_id_map[normalize_ws_name(actual_name)] = int(node_id)
+
     def _fetch_node_name(self, node_id: int) -> str | None:
         node = self.get_node(node_id)
         if node and node.name:
@@ -314,3 +350,48 @@ class CSClient:
         response = self.session.post(f"{self.base}{path}", verify=self.cfg.ssl_verify, timeout=120, **kwargs)
         response.raise_for_status()
         return response.json()
+
+
+def _related_item_matches(item: dict[str, Any], rel_bw_id: int, rel_type: str) -> bool:
+    related_id = _find_int_value(item, {"rel_bw_id", "related_bw_id", "related_id", "target_node_id", "id"})
+    item_rel_type = _find_str_value(item, {"rel_type", "relation_type", "type"})
+    if related_id != rel_bw_id:
+        return False
+    return not item_rel_type or item_rel_type.lower() == rel_type.lower()
+
+
+def _find_int_value(value: Any, keys: set[str]) -> int | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in keys:
+                try:
+                    return int(item)
+                except (TypeError, ValueError):
+                    pass
+        for item in value.values():
+            found = _find_int_value(item, keys)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_int_value(item, keys)
+            if found is not None:
+                return found
+    return None
+
+
+def _find_str_value(value: Any, keys: set[str]) -> str:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in keys and item is not None:
+                return str(item)
+        for item in value.values():
+            found = _find_str_value(item, keys)
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_str_value(item, keys)
+            if found:
+                return found
+    return ""

@@ -52,6 +52,39 @@ def test_parse_workbook_reads_workspace_and_file_rows(tmp_path):
     assert parsed.workspaces[0].cat_values["country"] == ["HU", "DE"]
     assert len(parsed.files) == 1
     assert parsed.files[0].local_path == str(source)
+    assert parsed.related_workspaces == []
+
+
+def test_parse_workbook_reads_optional_related_workspace_sheet_and_enabled_values(tmp_path):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Workspace"
+    ws.append(["location", "title"])
+    files = wb.create_sheet("File")
+    files.append(["location", "title", "src"])
+    related = wb.create_sheet("RelatedWorkspace")
+    related.append(["source_workspace", "target_workspace", "target_node_id", "relation_type", "enabled"])
+    related.append(["DEV_TEST_001", "DEV_TEST_002", "", "", "igen"])
+    related.append(["DEV_TEST_003", "", 4444, "parent", "yes"])
+    related.append(["DEV_TEST_004", "DEV_TEST_005", "", "child", "no"])
+    xlsx = tmp_path / "migration.xlsx"
+    wb.save(xlsx)
+
+    config_path = tmp_path / "config.json"
+    _write_config(config_path)
+    cfg = load_config(config_path)
+
+    parsed = parse_workbook(xlsx, cfg)
+
+    assert len(parsed.related_workspaces) == 3
+    assert parsed.related_workspaces[0].source_workspace == "DEV_TEST_001"
+    assert parsed.related_workspaces[0].target_workspace == "DEV_TEST_002"
+    assert parsed.related_workspaces[0].target_node_id is None
+    assert parsed.related_workspaces[0].relation_type == ""
+    assert parsed.related_workspaces[0].enabled is True
+    assert parsed.related_workspaces[1].target_node_id == 4444
+    assert parsed.related_workspaces[1].relation_type == "parent"
+    assert parsed.related_workspaces[2].enabled is False
 
 
 def test_category_value_map_normalizes_single_value_variants(tmp_path):
