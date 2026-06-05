@@ -64,6 +64,29 @@ class BrandingDetection:
     error: str = ""
 
 
+REPORT_TYPES = {
+    "analyze": "Analyze",
+    "preflight": "Preflight",
+    "dry-run": "Dry-run",
+    "dry_run": "Dry-run",
+    "dryrun": "Dry-run",
+    "execution": "Execution",
+    "execute": "Execution",
+    "cleanup": "Cleanup",
+}
+
+REPORT_TYPE_ORDER = ("analyze", "preflight", "dry-run", "execution", "cleanup")
+
+WORKFLOW_STEPS = (
+    ("upload", "Upload"),
+    ("analyze", "Analyze"),
+    ("preflight", "Preflight"),
+    ("dry-run", "Dry-run"),
+    ("execute", "Execute"),
+    ("reports", "Reports"),
+)
+
+
 def active_config_path() -> Path:
     return Path(os.getenv("CONTENTFLOW_CONFIG_PATH", str(DEFAULT_CONFIG_PATH)))
 
@@ -225,12 +248,159 @@ def latest_logs(root: Path | None = None, limit: int = 8) -> list[FileInfo]:
     return list_logs(root)[:limit]
 
 
+def selected_workbook(files: list[FileInfo], selected_path: str | None = None) -> FileInfo | None:
+    if not selected_path:
+        return None
+    normalized = selected_path.replace("\\", "/")
+    return next((file for file in files if file.path.replace("\\", "/") == normalized), None)
+
+
+def report_type(filename: str, root: Path | None = None) -> str:
+    metadata_type = _report_type_from_content(filename, root)
+    if metadata_type:
+        return metadata_type
+    normalized = filename.lower().replace("-", "_").replace(" ", "_")
+    for token, label in REPORT_TYPES.items():
+        if token in normalized:
+            return label.lower()
+    return "unknown"
+
+
+def report_summaries(files: list[FileInfo], root: Path | None = None) -> list[dict[str, object]]:
+    return [
+        {
+            "file": file,
+            "type": report_type(file.path, root),
+            "is_latest": index == 0,
+        }
+        for index, file in enumerate(files)
+    ]
+
+
+def execution_report_options(files: list[FileInfo], root: Path | None = None) -> list[FileInfo]:
+    return [file for file in files if file.suffix == "json" and report_type(file.path, root) == "execution"]
+
+
+def workflow_state(selected: FileInfo | None, reports: list[FileInfo], root: Path | None = None) -> dict[str, object]:
+    if selected is None:
+        return _workflow_response(
+            current_key="upload",
+            summary="Select or upload a workbook to start the guided migration flow.",
+            status_overrides={},
+            matching_reports=[],
+        )
+
+    matching_reports = matching_workbook_reports(selected, reports, root)
+    report_types = {report_type(file.path, root) for file in matching_reports}
+
+    if "execution" in report_types:
+        return _workflow_response(
+            current_key="reports",
+            summary="Execution output for the selected workbook is available. Review reports and logs before closing the run.",
+            status_overrides={"execute": "complete"},
+            matching_reports=matching_reports,
+        )
+    if "dry-run" in report_types:
+        overrides = {"dry-run": "complete", "execute": "current", "reports": "available"}
+        if "preflight" in report_types:
+            overrides["preflight"] = "complete"
+        else:
+            overrides["preflight"] = "warning"
+        return _workflow_response(
+            current_key="execute",
+            summary="Dry-run output exists for the selected workbook. Execute is available only after review and confirmation.",
+            status_overrides=overrides,
+            matching_reports=matching_reports,
+        )
+    if "preflight" in report_types:
+        return _workflow_response(
+            current_key="dry-run",
+            summary="Preflight evidence exists for the selected workbook. Run a dry-run before controlled execution.",
+            status_overrides={},
+            matching_reports=matching_reports,
+        )
+    if "analyze" in report_types:
+        return _workflow_response(
+            current_key="preflight",
+            summary="Analysis evidence exists for the selected workbook. Run Content Server preflight next.",
+            status_overrides={},
+            matching_reports=matching_reports,
+        )
+    return _workflow_response(
+        current_key="analyze",
+        summary="Workbook is selected. Start with Analyze to inspect the migration plan.",
+        status_overrides={},
+        matching_reports=matching_reports,
+    )
+
+
+def matching_workbook_reports(workbook: FileInfo, reports: list[FileInfo], root: Path | None = None) -> list[FileInfo]:
+    workbook_stem = Path(workbook.name).stem.lower()
+    workbook_name = workbook.name.lower()
+    workbook_path = workbook.path.replace("\\", "/").lower()
+    matches = []
+    for report in reports:
+        filename = report.name.lower()
+        if filename.startswith(f"{workbook_stem}_") or filename == f"{workbook_stem}.json":
+            matches.append(report)
+            continue
+        metadata = _report_metadata(report.path, root)
+        xlsx_path = str(metadata.get("xlsx_path") or metadata.get("workbook") or "").replace("\\", "/").lower()
+        if xlsx_path and (xlsx_path.endswith(f"/{workbook_name}") or xlsx_path == workbook_name or xlsx_path == workbook_path):
+            matches.append(report)
+    return matches
+
+
 def read_safe_text(relative_path: str, root: Path | None = None) -> tuple[Path, str]:
     root = root or PROJECT_ROOT
     path = safe_project_path(relative_path, root)
     if path.suffix.lower() not in ALLOWED_TEXT_SUFFIXES:
         raise ValueError("This file type is not displayed as text.")
     return path, path.read_text(encoding="utf-8", errors="replace")
+
+
+def readiness_preview(relative_path: str, content: str, root: Path | None = None) -> dict[str, object] | None:
+    path = Path(relative_path)
+    if path.suffix.lower() == ".json":
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        summary = data.get("readiness") or data.get("summary")
+        if not isinstance(summary, dict) or "readiness_score" not in summary:
+            return None
+        return {
+            "readiness_score": summary.get("readiness_score"),
+            "decision": summary.get("decision"),
+            "total_issues": summary.get("total_issues"),
+            "blocking_issue_count": summary.get("blocking_issue_count") or summary.get("blocking_count"),
+            "warning_count": summary.get("warning_count"),
+            "info_count": summary.get("info_count"),
+            "top_risks": summary.get("top_risks") or [],
+            "recommended_next_steps": summary.get("recommended_next_steps") or [],
+        }
+    if path.suffix.lower() == ".md" and "# Migration Readiness Report" in content:
+        sibling = _report_json_sibling(safe_project_path(relative_path, root))
+        if sibling and sibling.exists():
+            try:
+                data = json.loads(sibling.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, json.JSONDecodeError):
+                data = {}
+            summary = data.get("readiness") or data.get("summary") if isinstance(data, dict) else None
+            if isinstance(summary, dict):
+                return {
+                    "readiness_score": summary.get("readiness_score"),
+                    "decision": summary.get("decision"),
+                    "total_issues": summary.get("total_issues"),
+                    "blocking_issue_count": summary.get("blocking_issue_count") or summary.get("blocking_count"),
+                    "warning_count": summary.get("warning_count"),
+                    "info_count": summary.get("info_count"),
+                    "top_risks": summary.get("top_risks") or [],
+                    "recommended_next_steps": summary.get("recommended_next_steps") or [],
+                }
+    return None
 
 
 def safe_project_path(relative_path: str, root: Path | None = None) -> Path:
@@ -275,7 +445,8 @@ def safe_excel_reference(value: str, root: Path | None = None) -> Path:
 
 def safe_report_reference(value: str, root: Path | None = None) -> Path:
     path = safe_project_path(value, root)
-    if path.suffix.lower() != ".json" or "execution" not in path.name:
+    project_root = (root or PROJECT_ROOT).resolve()
+    if path.suffix.lower() != ".json" or report_type(str(path.relative_to(project_root)), project_root) != "execution":
         raise ValueError("Select an execution JSON report.")
     return path
 
@@ -300,6 +471,92 @@ def _file_infos(paths: Iterable[Path], root: Path) -> list[FileInfo]:
             )
         )
     return sorted(infos, key=lambda item: item.modified, reverse=True)
+
+
+def _workflow_response(
+    *,
+    current_key: str,
+    summary: str,
+    status_overrides: dict[str, str],
+    matching_reports: list[FileInfo],
+) -> dict[str, object]:
+    current_index = next(index for index, step in enumerate(WORKFLOW_STEPS) if step[0] == current_key)
+    steps = []
+    for index, (key, label) in enumerate(WORKFLOW_STEPS):
+        status = status_overrides.get(key)
+        if not status:
+            if index < current_index:
+                status = "complete"
+            elif index == current_index:
+                status = "current"
+            else:
+                status = "pending"
+        steps.append({"key": key, "label": label, "status": status})
+    return {
+        "current_key": current_key,
+        "summary": summary,
+        "scope_note": "Progress is based on the selected workbook and its latest matching reports.",
+        "matching_report_count": len(matching_reports),
+        "steps": steps,
+    }
+
+
+def _report_type_from_content(relative_path: str, root: Path | None = None) -> str:
+    metadata = _report_metadata(relative_path, root)
+    mode = str(metadata.get("mode") or metadata.get("action") or metadata.get("command") or "").lower()
+    if mode in {"analyze", "preflight", "dry-run", "dry_run", "dryrun", "execute", "execution"}:
+        return "dry-run" if mode in {"dry-run", "dry_run", "dryrun"} else ("execution" if mode in {"execute", "execution"} else mode)
+    if mode in {"cleanup-plan", "cleanup-execute", "cleanup-execution", "cleanup"}:
+        return "cleanup"
+    return ""
+
+
+def _report_metadata(relative_path: str, root: Path | None = None) -> dict[str, object]:
+    root = root or PROJECT_ROOT
+    try:
+        path = safe_project_path(relative_path, root)
+    except (FileNotFoundError, ValueError):
+        path = Path(relative_path)
+        if not path.is_absolute():
+            path = root / relative_path
+    if not path.exists() or not path.is_file():
+        return {}
+    sibling_json = _report_json_sibling(path)
+    if path.suffix.lower() != ".json" and sibling_json and sibling_json.exists():
+        try:
+            data = json.loads(sibling_json.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        if isinstance(data, dict):
+            return data
+    if path.suffix.lower() == ".json":
+        try:
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+    if path.suffix.lower() in {".md", ".txt", ".log"}:
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:4096].lower()
+        except OSError:
+            return {}
+        for mode in REPORT_TYPE_ORDER:
+            if f"mode:** {mode}" in head or f"mode: {mode}" in head or f'"mode": "{mode}"' in head:
+                return {"mode": mode}
+        if "mode:** execute" in head or "mode: execute" in head:
+            return {"mode": "execute"}
+    return {}
+
+
+def _report_json_sibling(path: Path) -> Path | None:
+    if path.suffix.lower() == ".json":
+        return path
+    direct = path.with_suffix(".json")
+    if direct.exists():
+        return direct
+    if path.stem.endswith("_issues"):
+        return path.with_name(path.stem.removesuffix("_issues") + ".json")
+    return None
 
 
 def _sanitize_branding(data: dict[str, object]) -> dict[str, object]:

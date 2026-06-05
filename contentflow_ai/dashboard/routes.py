@@ -14,14 +14,10 @@ bp = Blueprint("dashboard", __name__)
 def index():
     return render_template(
         "index.html",
-        cwd=str(Path.cwd()),
-        config=services.config_status(),
-        env=services.env_status(),
-        excels=services.list_excel_files(),
-        reports=services.latest_reports(),
-        logs=services.latest_logs(),
-        message=request.args.get("message", ""),
-        result=None,
+        **_index_context(
+            message=request.args.get("message", ""),
+            selected_xlsx=request.args.get("selected_xlsx") or None,
+        ),
     )
 
 
@@ -32,6 +28,9 @@ def upload():
         message = f"Uploaded: {saved}" if saved else "No file selected."
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
+        saved = None
+    if saved:
+        return redirect(url_for("dashboard.index", message=message, selected_xlsx=saved))
     return redirect(url_for("dashboard.index", message=message))
 
 
@@ -42,12 +41,12 @@ def action():
     report_json = request.form.get("report_json") or None
     validation = _validate_confirmation(action_name)
     if validation:
-        return _render_index_with_result(message=validation)
+        return _render_index_with_result(message=validation, selected_xlsx=xlsx)
     try:
         result = services.run_migration_action(action_name, xlsx=xlsx, report_json=report_json)
-        return _render_index_with_result(result=result)
+        return _render_index_with_result(result=result, selected_xlsx=xlsx)
     except Exception as exc:  # noqa: BLE001
-        return _render_index_with_result(message=str(exc))
+        return _render_index_with_result(message=str(exc), selected_xlsx=xlsx)
 
 
 @bp.get("/reports")
@@ -149,18 +148,30 @@ def report_detail():
         return Response(str(exc), status=400, mimetype="text/plain")
 
 
-def _render_index_with_result(message: str = "", result=None):
-    return render_template(
-        "index.html",
-        cwd=str(Path.cwd()),
-        config=services.config_status(),
-        env=services.env_status(),
-        excels=services.list_excel_files(),
-        reports=services.latest_reports(),
-        logs=services.latest_logs(),
-        message=message,
-        result=result,
-    )
+def _render_index_with_result(message: str = "", result=None, selected_xlsx: str | None = None):
+    return render_template("index.html", **_index_context(message=message, result=result, selected_xlsx=selected_xlsx))
+
+
+def _index_context(message: str = "", result=None, selected_xlsx: str | None = None) -> dict[str, object]:
+    excels = services.list_excel_files()
+    all_reports = services.list_reports()
+    reports = all_reports[:8]
+    logs = services.latest_logs()
+    selected_workbook = services.selected_workbook(excels, selected_xlsx)
+    return {
+        "cwd": str(Path.cwd()),
+        "config": services.config_status(),
+        "env": services.env_status(),
+        "excels": excels,
+        "selected_workbook": selected_workbook,
+        "reports": reports,
+        "report_summaries": services.report_summaries(reports),
+        "cleanup_reports": services.execution_report_options(all_reports),
+        "logs": logs,
+        "workflow": services.workflow_state(selected_workbook, all_reports),
+        "message": message,
+        "result": result,
+    }
 
 
 def _validate_confirmation(action_name: str) -> str:

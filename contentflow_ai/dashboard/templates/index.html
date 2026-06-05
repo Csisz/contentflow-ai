@@ -4,9 +4,42 @@
     <section class="notice">{{ message }}</section>
   {% endif %}
 
-  <section class="grid status-grid">
-    <div class="panel">
-      <h2>Workspace</h2>
+  <section class="hero-panel">
+    <div>
+      <p class="eyebrow">Migration Copilot</p>
+      <h2>Guided Content Server migration cockpit</h2>
+      <p class="hero-copy">{{ workflow.summary }}</p>
+    </div>
+    <div class="hero-meta">
+      <span>{{ excels|length }} workbooks</span>
+      <span>{{ reports|length }} reports</span>
+      <span>{{ logs|length }} logs</span>
+    </div>
+  </section>
+
+  <section class="workflow" aria-label="Migration workflow">
+    {% for step in workflow.steps %}
+      <div class="workflow-step is-{{ step.status }}">
+        <span class="step-index">{{ loop.index }}</span>
+        <span>{{ step.label }}</span>
+        <small>{{ step.status }}</small>
+      </div>
+    {% endfor %}
+  </section>
+  <div class="workflow-note">
+    <span>{{ workflow.scope_note }}</span>
+    {% if selected_workbook %}
+      <a href="{{ url_for('dashboard.index') }}">Reset view</a>
+    {% endif %}
+  </div>
+
+  <section class="status-grid">
+    <div class="status-card">
+      <div class="card-heading">
+        <span class="card-kicker">Workspace</span>
+        <span class="status-dot {{ 'is-ok' if config.exists else 'is-bad' }}"></span>
+      </div>
+      <h2>Project readiness</h2>
       <dl>
         <dt>Current directory</dt>
         <dd>{{ cwd }}</dd>
@@ -14,8 +47,12 @@
         <dd>{{ config.path }} <span class="{{ 'ok' if config.exists else 'bad' }}">{{ 'found' if config.exists else 'missing' }}</span></dd>
       </dl>
     </div>
-    <div class="panel">
-      <h2>Environment</h2>
+    <div class="status-card">
+      <div class="card-heading">
+        <span class="card-kicker">Environment</span>
+        <span class="status-dot {{ 'is-ok' if env.values()|select|list|length == env|length else 'is-bad' }}"></span>
+      </div>
+      <h2>Connection settings</h2>
       <dl>
         {% for key, is_set in env.items() %}
           <dt>{{ key }}</dt>
@@ -25,54 +62,111 @@
     </div>
   </section>
 
-  <section class="panel">
-    <h2>Migration Actions</h2>
-    <form method="post" action="{{ url_for('dashboard.action') }}" class="action-form">
-      <label for="xlsx">Excel workbook</label>
-      <select name="xlsx" id="xlsx">
-        <option value="">Select .xlsx</option>
-        {% for file in excels %}
-          <option value="{{ file.path }}">{{ file.path }}</option>
-        {% endfor %}
-      </select>
-      <div class="buttons">
-        <button name="action" value="analyze">Analyze</button>
-        <button name="action" value="preflight">Content Server Preflight</button>
-        <button name="action" value="dry-run">Dry-run</button>
+  <section class="dashboard-grid">
+    <section class="panel upload-panel">
+      <div class="panel-title">
+        <p class="eyebrow">Step 1</p>
+        <h2>Upload Workbook</h2>
       </div>
-      <label class="check"><input type="checkbox" name="confirm_execute" value="yes"> I understand this will create or update Content Server objects.</label>
-      <button class="danger" name="action" value="execute">Execute</button>
-    </form>
+      <p class="panel-note">Add a new migration workbook, or continue with the latest workbook already in the workspace.</p>
+      <form method="post" action="{{ url_for('dashboard.upload') }}" enctype="multipart/form-data" class="inline-form">
+        <input type="file" name="xlsx" accept=".xlsx">
+        <button>Upload to uploads/</button>
+      </form>
+    </section>
+
+    <section class="panel actions-panel cockpit-panel">
+      <div class="panel-title">
+        <p class="eyebrow">Steps 2-4</p>
+        <h2>Plan and validate</h2>
+      </div>
+      <div class="selected-workbook">
+        <span>Selected workbook</span>
+        <strong>{{ selected_workbook.path if selected_workbook else "No workbook selected yet" }}</strong>
+      </div>
+      <form method="get" action="{{ url_for('dashboard.index') }}" class="select-run-form">
+        <label for="selected_xlsx">Current run workbook</label>
+        <div class="select-run-controls">
+          <select name="selected_xlsx" id="selected_xlsx">
+            <option value="">Select .xlsx</option>
+            {% for file in excels %}
+              <option value="{{ file.path }}" {% if selected_workbook and file.path == selected_workbook.path %}selected{% endif %}>{{ file.path }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Set current run</button>
+        </div>
+      </form>
+      <form method="post" action="{{ url_for('dashboard.action') }}" class="action-form">
+        <label for="xlsx">Workbook for safe actions</label>
+        <select name="xlsx" id="xlsx">
+          <option value="">Select .xlsx</option>
+          {% for file in excels %}
+            <option value="{{ file.path }}" {% if selected_workbook and file.path == selected_workbook.path %}selected{% endif %}>{{ file.path }}</option>
+          {% endfor %}
+        </select>
+        <div class="action-tiles">
+          <button name="action" value="analyze">
+            <span>Analyze</span>
+            <small>Read workbook and prepare migration plan</small>
+          </button>
+          <button name="action" value="preflight">
+            <span>Content Server Preflight</span>
+            <small>Check target readiness before changes</small>
+          </button>
+          <button name="action" value="dry-run">
+            <span>Dry-run</span>
+            <small>Simulate execution with no writes</small>
+          </button>
+        </div>
+      </form>
+    </section>
   </section>
 
-  <section class="panel">
-    <h2>Upload Workbook</h2>
-    <form method="post" action="{{ url_for('dashboard.upload') }}" enctype="multipart/form-data" class="inline-form">
-      <input type="file" name="xlsx" accept=".xlsx">
-      <button>Upload to uploads/</button>
-    </form>
-  </section>
-
-  <section class="panel">
-    <h2>Cleanup</h2>
-    <form method="post" action="{{ url_for('dashboard.action') }}" class="action-form">
-      <label for="report_json">Execution report JSON</label>
-      <select name="report_json" id="report_json">
-        <option value="">Select execution .json</option>
-        {% for file in reports if file.suffix == "json" and "execution" in file.name %}
-          <option value="{{ file.path }}">{{ file.path }}</option>
-        {% endfor %}
-      </select>
-      <div class="buttons">
-        <button name="action" value="cleanup-plan">Cleanup Plan</button>
+  <section class="danger-zone">
+    <div class="danger-intro">
+      <p class="eyebrow">Controlled operations</p>
+      <h2>Controlled execution / danger zone</h2>
+      <p>Execution and cleanup require explicit confirmation before the existing backend actions run.</p>
+    </div>
+    <div class="danger-grid">
+      <div class="panel danger-panel">
+        <h3>Execute migration</h3>
+        <p class="danger-warning">This operation may create or update Content Server objects. Run Analyze, Preflight and Dry-run first.</p>
+        <form method="post" action="{{ url_for('dashboard.action') }}" class="action-form">
+          <label for="execute_xlsx">Excel workbook</label>
+          <select name="xlsx" id="execute_xlsx">
+            <option value="">Select .xlsx</option>
+            {% for file in excels %}
+              <option value="{{ file.path }}" {% if selected_workbook and file.path == selected_workbook.path %}selected{% endif %}>{{ file.path }}</option>
+            {% endfor %}
+          </select>
+          <label class="check"><input type="checkbox" name="confirm_execute" value="yes"> I understand this will create or update Content Server objects.</label>
+          <button class="danger" name="action" value="execute">Execute</button>
+        </form>
       </div>
-      <label class="check"><input type="checkbox" name="confirm_cleanup" value="yes"> I understand this will delete only objects listed in the selected execution report.</label>
-      <button class="danger" name="action" value="cleanup-execute">Cleanup Execute</button>
-    </form>
+      <div class="panel danger-panel">
+        <h3>Recovery / cleanup</h3>
+        <p class="danger-warning">Safety tools only use the selected execution report JSON. Cleanup does not scan for unrelated objects.</p>
+        <form method="post" action="{{ url_for('dashboard.action') }}" class="action-form">
+          <label for="report_json">Execution report JSON</label>
+          <select name="report_json" id="report_json">
+            <option value="">Select execution .json</option>
+            {% for file in cleanup_reports %}
+              <option value="{{ file.path }}">{{ file.path }}</option>
+            {% endfor %}
+          </select>
+          <div class="buttons">
+            <button name="action" value="cleanup-plan">Cleanup Plan</button>
+          </div>
+          <label class="check"><input type="checkbox" name="confirm_cleanup" value="yes"> I understand this will delete only objects listed in the selected execution report.</label>
+          <button class="danger" name="action" value="cleanup-execute">Cleanup Execute</button>
+        </form>
+      </div>
+    </div>
   </section>
 
   {% if result %}
-    <section class="panel">
+    <section class="panel command-panel">
       <h2>Command Output</h2>
       <p>Return code: <strong>{{ result.return_code }}</strong></p>
       <pre>{{ result.command | join(' ') }}</pre>
@@ -83,24 +177,43 @@
     </section>
   {% endif %}
 
-  <section class="grid">
+  <section class="grid evidence-grid">
     <div class="panel">
-      <h2>Latest Reports</h2>
+      <div class="panel-title">
+        <p class="eyebrow">Audit trail</p>
+        <h2>Latest Reports</h2>
+      </div>
       <ul class="file-list">
-        {% for file in reports %}
-          <li><a href="{{ url_for('dashboard.report_detail', path=file.path) }}">{{ file.name }}</a><span>{{ file.modified }} - {{ file.size }} bytes</span></li>
+        {% for item in report_summaries %}
+          <li class="{% if item.is_latest %}latest-file{% endif %}">
+            <div class="file-row">
+              <a href="{{ url_for('dashboard.report_detail', path=item.file.path) }}">{{ item.file.name }}</a>
+              <span class="type-badge type-{{ item.type }}">{{ item.type }}</span>
+              {% if item.is_latest %}<span class="latest-badge">Latest</span>{% endif %}
+            </div>
+            <span>{{ item.file.modified }} - {{ item.file.size }} bytes</span>
+          </li>
         {% else %}
-          <li>No reports found.</li>
+          <li class="empty-state">No reports yet. Run Analyze to create the first audit artifact.</li>
         {% endfor %}
       </ul>
     </div>
     <div class="panel">
-      <h2>Latest Logs</h2>
+      <div class="panel-title">
+        <p class="eyebrow">Operations</p>
+        <h2>Latest Logs</h2>
+      </div>
       <ul class="file-list">
         {% for file in logs %}
-          <li><a href="{{ url_for('dashboard.report_detail', path=file.path) }}">{{ file.name }}</a><span>{{ file.modified }} - {{ file.size }} bytes</span></li>
+          <li class="{% if loop.first %}latest-file{% endif %}">
+            <div class="file-row">
+              <a href="{{ url_for('dashboard.report_detail', path=file.path) }}">{{ file.name }}</a>
+              {% if loop.first %}<span class="latest-badge">Latest</span>{% endif %}
+            </div>
+            <span>{{ file.modified }} - {{ file.size }} bytes</span>
+          </li>
         {% else %}
-          <li>No logs found.</li>
+          <li class="empty-state">No logs yet. Activity will appear here after a migration command runs.</li>
         {% endfor %}
       </ul>
     </div>

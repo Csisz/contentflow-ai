@@ -80,12 +80,16 @@ class Issue:
 class PreflightSummary:
     workspace_rows: int = 0
     file_rows: int = 0
+    total_issues: int = 0
     error_count: int = 0
     warning_count: int = 0
     info_count: int = 0
     blocking_count: int = 0
+    blocking_issue_count: int = 0
     readiness_score: int = 100
     decision: Literal["GO", "GO_WITH_WARNINGS", "NO_GO"] = "GO"
+    top_risks: list[str] = field(default_factory=list)
+    recommended_next_steps: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -113,18 +117,17 @@ class PreflightReport:
         summary = PreflightSummary(
             workspace_rows=workspace_count,
             file_rows=file_count,
+            total_issues=len(issues),
             error_count=sum(1 for i in issues if i.severity == "error"),
             warning_count=sum(1 for i in issues if i.severity == "warning"),
             info_count=sum(1 for i in issues if i.severity == "info"),
             blocking_count=sum(1 for i in issues if i.blocking),
         )
+        summary.blocking_issue_count = summary.blocking_count
         summary.readiness_score = calculate_readiness_score(summary, workspace_count, file_count)
-        if summary.blocking_count or summary.error_count:
-            summary.decision = "NO_GO"
-        elif summary.warning_count:
-            summary.decision = "GO_WITH_WARNINGS"
-        else:
-            summary.decision = "GO"
+        summary.decision = readiness_decision(summary)
+        summary.top_risks = top_risks(issues)
+        summary.recommended_next_steps = recommended_next_steps(summary)
 
         return cls(
             project_name=project_name,
@@ -143,17 +146,77 @@ class PreflightReport:
             "xlsx_path": self.xlsx_path,
             "mode": self.mode,
             "summary": asdict(self.summary),
+            "readiness": asdict(self.summary),
             "issues": [issue.to_dict() for issue in self.issues],
             "metadata": self.metadata,
         }
 
 
+def readiness_decision(summary: PreflightSummary) -> Literal["GO", "GO_WITH_WARNINGS", "NO_GO"]:
+    if summary.blocking_issue_count or summary.blocking_count or summary.readiness_score < 70:
+        return "NO_GO"
+    if summary.readiness_score < 90 or summary.warning_count:
+        return "GO_WITH_WARNINGS"
+    return "GO"
+
+
+def recommended_next_steps(summary: PreflightSummary) -> list[str]:
+    if summary.decision == "GO":
+        return [
+            "Review the readiness report with the migration owner.",
+            "Run Content Server preflight if this report was created by Analyze.",
+            "Proceed to dry-run before any controlled execution.",
+        ]
+    if summary.decision == "GO_WITH_WARNINGS":
+        return [
+            "Review and accept or remediate all warnings.",
+            "Re-run Analyze or Preflight after updates.",
+            "Proceed to dry-run only after stakeholder approval.",
+        ]
+    return [
+        "Fix all blocking issues before migration execution.",
+        "Re-run Analyze until blocking issues are cleared.",
+        "Run Content Server preflight before dry-run or execution.",
+    ]
+
+
+def top_risks(issues: list[Issue], limit: int = 5) -> list[str]:
+    risks = []
+    seen = set()
+    for issue in sorted(issues, key=_risk_sort_key):
+        if issue.severity == "info" and not issue.blocking:
+            continue
+        risk = f"{issue.code}: {issue.message}"
+        if issue.suggestion:
+            risk = f"{risk} Recommendation: {issue.suggestion}"
+        if risk in seen:
+            continue
+        seen.add(risk)
+        risks.append(risk)
+        if len(risks) >= limit:
+            break
+    return risks or ["No material migration readiness risks were detected."]
+
+
+def _risk_sort_key(issue: Issue) -> tuple[int, int, str]:
+    if issue.blocking:
+        severity_rank = 0
+    elif issue.severity == "error":
+        severity_rank = 1
+    elif issue.severity == "warning":
+        severity_rank = 2
+    else:
+        severity_rank = 3
+    return (severity_rank, issue.row_index or 0, issue.code)
+
+
 def calculate_readiness_score(summary: PreflightSummary, workspace_count: int, file_count: int) -> int:
     total_rows = max(workspace_count + file_count, 1)
+    scale = max(total_rows ** 0.2, 1)
     penalty = 0
-    penalty += summary.blocking_count * 18
-    penalty += summary.error_count * 10
-    penalty += summary.warning_count * 3
-    # Scale down very large batches slightly so one warning in 10k rows does not dominate.
-    scaled_penalty = int(penalty / max(total_rows ** 0.25, 1))
+    penalty += summary.blocking_issue_count * 35
+    penalty += max(summary.error_count - summary.blocking_issue_count, 0) * 18
+    penalty += summary.warning_count * 7
+    penalty += summary.info_count * 1
+    scaled_penalty = round(penalty / scale)
     return max(0, min(100, 100 - scaled_penalty))

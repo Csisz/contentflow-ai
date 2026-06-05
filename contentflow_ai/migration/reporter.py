@@ -22,7 +22,7 @@ class ReportGenerator:
             "json": self.write_json(report, f"{stem}.json"),
             "markdown": self.write_markdown(report, f"{stem}.md"),
             "csv": self.write_csv(report.issues, f"{stem}_issues.csv"),
-            "xlsx": self.write_xlsx(report.issues, f"{stem}_issues.xlsx"),
+            "xlsx": self.write_xlsx(report, f"{stem}_issues.xlsx"),
         }
         return paths
 
@@ -150,6 +150,127 @@ class ReportGenerator:
         for column_cells in ws.columns:
             max_length = max(len(str(cell.value or "")) for cell in column_cells)
             ws.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 70)
+        wb.save(path)
+        return path
+
+    def write_markdown(self, report: PreflightReport, filename: str) -> Path:
+        path = self.output_dir / filename
+        summary = report.summary
+        lines = [
+            "# Migration Readiness Report",
+            "",
+            "## Executive summary",
+            "",
+            f"- **Project:** {report.project_name}",
+            f"- **Decision:** {summary.decision}",
+            f"- **Readiness score:** {summary.readiness_score}/100",
+            f"- **Workbook:** {report.xlsx_path}",
+            f"- **Mode:** {report.mode}",
+            f"- **Generated at:** {report.generated_at}",
+            f"- **Total issues:** {summary.total_issues}",
+            f"- **Blocking issues:** {summary.blocking_issue_count}",
+            f"- **Warnings:** {summary.warning_count}",
+            f"- **Informational findings:** {summary.info_count}",
+            "",
+            "## Readiness score",
+            "",
+            f"ContentFlow AI calculated a readiness score of **{summary.readiness_score}/100**. "
+            f"The current recommendation is **{summary.decision}**.",
+            "",
+            "## Scope",
+            "",
+            f"- **Workbook name:** {Path(report.xlsx_path).name}",
+            f"- **Workspace rows:** {summary.workspace_rows}",
+            f"- **File rows:** {summary.file_rows}",
+            "",
+            "## Issue summary by severity",
+            "",
+            f"- **Errors:** {summary.error_count}",
+            f"- **Warnings:** {summary.warning_count}",
+            f"- **Info:** {summary.info_count}",
+            f"- **Blocking:** {summary.blocking_issue_count}",
+            "",
+            "## Top risks",
+            "",
+        ]
+        lines.extend(f"- {risk}" for risk in summary.top_risks)
+        lines.extend(["", "## Recommended next steps", ""])
+        lines.extend(f"{index}. {step}" for index, step in enumerate(summary.recommended_next_steps, start=1))
+        lines.extend(["", "## Detailed issue table", ""])
+        if not report.issues:
+            lines.append("No issues found. The input is ready for the next reviewed dry-run step.")
+        else:
+            lines.extend([
+                "| Severity | Code | Row type | Row | Field | Blocking | Message | Suggestion |",
+                "|---|---|---|---:|---|---|---|---|",
+            ])
+            for issue in sorted(report.issues, key=_issue_sort_key):
+                lines.append(
+                    "| {severity} | `{code}` | {row_type} | {row} | {field} | {blocking} | {message} | {suggestion} |".format(
+                        severity=issue.severity.upper(),
+                        code=issue.code,
+                        row_type=issue.row_type,
+                        row=issue.row_index or "",
+                        field=issue.field or "",
+                        blocking="yes" if issue.blocking else "no",
+                        message=_escape_table(issue.message),
+                        suggestion=_escape_table(issue.suggestion),
+                    )
+                )
+        lines.extend([
+            "",
+            "## Technical appendix",
+            "",
+            "The JSON, CSV and XLSX companion files contain the structured report data and issue export for audit use.",
+            "",
+            "### Metadata",
+            "",
+            "```json",
+            json.dumps(report.metadata, ensure_ascii=False, indent=2),
+            "```",
+            "",
+        ])
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
+
+    def write_xlsx(self, report: PreflightReport, filename: str) -> Path:
+        path = self.output_dir / filename
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Summary"
+        ws.append(["Metric", "Value"])
+        for row in [
+            ("Readiness score", report.summary.readiness_score),
+            ("Decision", report.summary.decision),
+            ("Workbook", report.xlsx_path),
+            ("Mode", report.mode),
+            ("Generated at", report.generated_at),
+            ("Workspace rows", report.summary.workspace_rows),
+            ("File rows", report.summary.file_rows),
+            ("Total issues", report.summary.total_issues),
+            ("Blocking issues", report.summary.blocking_issue_count),
+            ("Errors", report.summary.error_count),
+            ("Warnings", report.summary.warning_count),
+            ("Info", report.summary.info_count),
+        ]:
+            ws.append(row)
+        ws.append([])
+        ws.append(["Top risks"])
+        for risk in report.summary.top_risks:
+            ws.append([risk])
+        ws.append([])
+        ws.append(["Recommended next steps"])
+        for step in report.summary.recommended_next_steps:
+            ws.append([step])
+        _format_sheet(ws)
+
+        ws = wb.create_sheet("Issues")
+        headers = _issue_fieldnames()
+        ws.append(headers)
+        for issue in sorted(report.issues, key=_issue_sort_key):
+            data = issue.to_dict()
+            ws.append([data.get(header) for header in headers])
+        _format_sheet(ws)
         wb.save(path)
         return path
 
