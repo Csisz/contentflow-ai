@@ -29,6 +29,16 @@ def test_dashboard_home_page_returns_200():
     assert b"ContentFlow AI - Migration Copilot" in response.data
 
 
+def test_dashboard_navigation_contains_settings_link():
+    app = create_app()
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    assert b"Settings" in response.data
+    assert b"/settings/branding" in response.data
+
+
 def test_dashboard_reports_page_returns_200():
     app = create_app()
 
@@ -123,7 +133,7 @@ def test_base_page_displays_configured_branding(monkeypatch, tmp_path):
 def test_branding_settings_page_returns_200():
     app = create_app()
 
-    response = app.test_client().get("/branding")
+    response = app.test_client().get("/settings/branding")
 
     assert response.status_code == 200
     assert b"Branding Settings" in response.data

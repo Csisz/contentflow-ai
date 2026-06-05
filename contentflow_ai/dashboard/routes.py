@@ -60,7 +60,7 @@ def logs():
     return render_template("reports.html", title="Logs", files=services.list_logs(), base_endpoint="dashboard.report_detail")
 
 
-@bp.get("/branding")
+@bp.get("/settings/branding")
 def branding():
     return render_template(
         "branding.html",
@@ -71,7 +71,12 @@ def branding():
     )
 
 
-@bp.post("/branding")
+@bp.get("/branding")
+def legacy_branding():
+    return redirect(url_for("dashboard.branding"))
+
+
+@bp.post("/settings/branding")
 def save_branding():
     data = {
         "app_title": request.form.get("app_title", ""),
@@ -96,7 +101,12 @@ def save_branding():
     return redirect(url_for("dashboard.branding", message=message))
 
 
-@bp.post("/branding/auto-detect")
+@bp.post("/branding")
+def legacy_save_branding():
+    return save_branding()
+
+
+@bp.post("/settings/branding/auto-detect")
 def branding_auto_detect():
     detected = services.detect_content_server_branding(os.getenv("OTCS_BASE_URL"))
     current = services.load_branding()
@@ -110,6 +120,11 @@ def branding_auto_detect():
         preview=detected,
         message=message,
     )
+
+
+@bp.post("/branding/auto-detect")
+def legacy_branding_auto_detect():
+    return branding_auto_detect()
 
 
 @bp.get("/branding/logo")
