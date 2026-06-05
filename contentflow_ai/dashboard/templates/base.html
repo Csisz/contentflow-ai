@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title or branding.app_title ~ " - " ~ branding.app_subtitle }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  </head>
+  <body style="--accent: {{ branding.primary_color }}; --header-bg: {{ branding.secondary_color }};">
+    <header class="topbar {{ branding.header_style }}">
+      <div class="brand">
+        {% if logo.mode == "local" %}
+          <img class="brand-logo" src="{{ url_for('dashboard.branding_logo', path=logo.src) }}" alt="{{ branding.app_title }} logo" onerror="this.hidden=true; this.nextElementSibling.hidden=false;">
+          <span class="brand-mark" hidden>{{ branding.app_title[:1] }}</span>
+        {% elif logo.mode in ["url", "content_server_auto"] %}
+          <img class="brand-logo" src="{{ logo.src }}" alt="{{ branding.app_title }} logo" onerror="this.hidden=true; this.nextElementSibling.hidden=false;">
+          <span class="brand-mark" hidden>{{ branding.app_title[:1] }}</span>
+        {% else %}
+          <span class="brand-mark">{{ branding.app_title[:1] }}</span>
+        {% endif %}
+        <div>
+          <h1>{{ branding.app_title }}</h1>
+          <p>{{ branding.app_subtitle }}</p>
+        </div>
+      </div>
+      <nav>
+        <a href="{{ url_for('dashboard.index') }}">Home</a>
+        <a href="{{ url_for('dashboard.reports') }}">Reports</a>
+        <a href="{{ url_for('dashboard.logs') }}">Logs</a>
+        <a href="{{ url_for('dashboard.branding') }}">Settings</a>
+      </nav>
+    </header>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

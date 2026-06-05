@@ -68,3 +68,28 @@ Preflight treats missing target folders as planned creation, not as a generic mi
 The optional `RelatedWorkspace` sheet can link Business Workspaces through the official Business Workspaces related items API. For maximum safety, prefer `target_node_id`, because it identifies the target Business Workspace unambiguously.
 
 `target_workspace` and `source_workspace` may also contain an existing Business Workspace name. ContentFlow AI searches `GET /api/v2/businessworkspaces` with `expanded_view=true` and `where_name=<name>`, then accepts only an exact trimmed name match. If exactly one matching Business Workspace is found, its node ID is used. If no exact match is found, the row fails with `RELATED_SOURCE_NOT_FOUND` or `RELATED_TARGET_NOT_FOUND`. If multiple exact matches are found, the row is rejected with `RELATED_SOURCE_AMBIGUOUS` or `RELATED_TARGET_AMBIGUOUS`.
+
+## Cleanup / rollback commands
+
+Use cleanup only from a generated execution JSON report. The cleanup commands never search broad paths and only act on node IDs explicitly listed in the referenced report.
+
+Plan first:
+
+```powershell
+python -m contentflow_ai.migration.cli cleanup-plan reports\<execution_report>.json --config config\config.local.json
+```
+
+Execute after review:
+
+```powershell
+python -m contentflow_ai.migration.cli cleanup-execute reports\<execution_report>.json --config config\config.local.json --yes
+```
+
+Safety notes:
+
+- `cleanup-plan` is read-only and writes JSON/Markdown cleanup plan reports.
+- `cleanup-execute` requires `--yes` and refuses to run if the execution report has no created workspace node IDs.
+- Related Business Workspace relations are removed before created workspaces are deleted.
+- Only workspace rows with original status `created` and a node ID are deleted.
+- Related target workspace nodes are never deleted; cleanup only removes the relation from the source workspace.
+- Uploaded files are listed as informational children and are expected to be removed with their created workspace when applicable.

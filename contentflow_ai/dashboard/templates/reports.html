@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+  <section class="panel">
+    <h2>{{ title }}</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Type</th>
+          <th>Modified</th>
+          <th>Size</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for file in files %}
+          <tr>
+            <td><a href="{{ url_for(base_endpoint, path=file.path) }}">{{ file.name }}</a></td>
+            <td>{{ file.suffix }}</td>
+            <td>{{ file.modified }}</td>
+            <td>{{ file.size }} bytes</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4">No files found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

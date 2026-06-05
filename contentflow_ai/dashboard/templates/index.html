@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block content %}
+  {% if message %}
+    <section class="notice">{{ message }}</section>
+  {% endif %}
+
+  <section class="grid status-grid">
+    <div class="panel">
+      <h2>Workspace</h2>
+      <dl>
+        <dt>Current directory</dt>
+        <dd>{{ cwd }}</dd>
+        <dt>Config path</dt>
+        <dd>{{ config.path }} <span class="{{ 'ok' if config.exists else 'bad' }}">{{ 'found' if config.exists else 'missing' }}</span></dd>
+      </dl>
+    </div>
+    <div class="panel">
+      <h2>Environment</h2>
+      <dl>
+        {% for key, is_set in env.items() %}
+          <dt>{{ key }}</dt>
+          <dd><span class="{{ 'ok' if is_set else 'bad' }}">{{ 'set' if is_set else 'not set' }}</span></dd>
+        {% endfor %}
+      </dl>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Migration Actions</h2>
+    <form method="post" action="{{ url_for('dashboard.action') }}" class="action-form">
+      <label for="xlsx">Excel workbook</label>
+      <select name="xlsx" id="xlsx">
+        <option value="">Select .xlsx</option>
+        {% for file in excels %}
+          <option value="{{ file.path }}">{{ file.path }}</option>
+        {% endfor %}
+      </select>
+      <div class="buttons">
+        <button name="action" value="analyze">Analyze</button>
+        <button name="action" value="preflight">Content Server Preflight</button>
+        <button name="action" value="dry-run">Dry-run</button>
+      </div>
+      <label class="check"><input type="checkbox" name="confirm_execute" value="yes"> I understand this will create or update Content Server objects.</label>
+      <button class="danger" name="action" value="execute">Execute</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Upload Workbook</h2>
+    <form method="post" action="{{ url_for('dashboard.upload') }}" enctype="multipart/form-data" class="inline-form">
+      <input type="file" name="xlsx" accept=".xlsx">
+      <button>Upload to uploads/</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Cleanup</h2>
+    <form method="post" action="{{ url_for('dashboard.action') }}" class="action-form">
+      <label for="report_json">Execution report JSON</label>
+      <select name="report_json" id="report_json">
+        <option value="">Select execution .json</option>
+        {% for file in reports if file.suffix == "json" and "execution" in file.name %}
+          <option value="{{ file.path }}">{{ file.path }}</option>
+        {% endfor %}
+      </select>
+      <div class="buttons">
+        <button name="action" value="cleanup-plan">Cleanup Plan</button>
+      </div>
+      <label class="check"><input type="checkbox" name="confirm_cleanup" value="yes"> I understand this will delete only objects listed in the selected execution report.</label>
+      <button class="danger" name="action" value="cleanup-execute">Cleanup Execute</button>
+    </form>
+  </section>
+
+  {% if result %}
+    <section class="panel">
+      <h2>Command Output</h2>
+      <p>Return code: <strong>{{ result.return_code }}</strong></p>
+      <pre>{{ result.command | join(' ') }}</pre>
+      <h3>stdout</h3>
+      <pre>{{ result.stdout }}</pre>
+      <h3>stderr</h3>
+      <pre>{{ result.stderr }}</pre>
+    </section>
+  {% endif %}
+
+  <section class="grid">
+    <div class="panel">
+      <h2>Latest Reports</h2>
+      <ul class="file-list">
+        {% for file in reports %}
+          <li><a href="{{ url_for('dashboard.report_detail', path=file.path) }}">{{ file.name }}</a><span>{{ file.modified }} - {{ file.size }} bytes</span></li>
+        {% else %}
+          <li>No reports found.</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div class="panel">
+      <h2>Latest Logs</h2>
+      <ul class="file-list">
+        {% for file in logs %}
+          <li><a href="{{ url_for('dashboard.report_detail', path=file.path) }}">{{ file.name }}</a><span>{{ file.modified }} - {{ file.size }} bytes</span></li>
+        {% else %}
+          <li>No logs found.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+{% endblock %}

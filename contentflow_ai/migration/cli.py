@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 
+from .cleanup import CleanupExecutor, CleanupPlanner
 from .config import load_config
 from .excel_parser import parse_workbook
 from .import_engine import ImportEngine, ImportExecutionReport
@@ -24,6 +25,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_import(args, execute=False)
     if args.command == "execute":
         return _run_import(args, execute=True)
+    if args.command == "cleanup-plan":
+        return _run_cleanup_plan(args)
+    if args.command == "cleanup-execute":
+        return _run_cleanup_execute(args)
     parser.print_help()
     return 2
 
@@ -45,6 +50,16 @@ def build_parser() -> argparse.ArgumentParser:
         cmd.add_argument("--reports-dir", default="reports", help="Report output directory.")
         if name == "execute":
             cmd.add_argument("--yes", action="store_true", help="Required confirmation for write operations.")
+    cleanup_plan = sub.add_parser("cleanup-plan", help="Build a read-only cleanup plan from an execution JSON report.")
+    cleanup_plan.add_argument("execution_report_json", help="Execution report JSON path.")
+    cleanup_plan.add_argument("--config", required=True, help="JSON config path.")
+    cleanup_plan.add_argument("--reports-dir", default="reports", help="Report output directory.")
+
+    cleanup_execute = sub.add_parser("cleanup-execute", help="Execute cleanup from an execution JSON report. Requires --yes.")
+    cleanup_execute.add_argument("execution_report_json", help="Execution report JSON path.")
+    cleanup_execute.add_argument("--config", required=True, help="JSON config path.")
+    cleanup_execute.add_argument("--reports-dir", default="reports", help="Report output directory.")
+    cleanup_execute.add_argument("--yes", action="store_true", help="Required confirmation for cleanup write operations.")
     return parser
 
 
@@ -98,6 +113,61 @@ def _run_import(args: argparse.Namespace, *, execute: bool) -> int:
     print(f"Full log: {full_log}")
     print(f"Error log: {error_log}")
     return 0 if stats.ws_failed == 0 and stats.f_failed == 0 else 1
+
+
+def _run_cleanup_plan(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config, dry_run=True)
+    report = CleanupPlanner(cfg).plan(args.execution_report_json)
+    paths = ReportGenerator(args.reports_dir).write_cleanup_all(
+        report,
+        execution_stem=Path(args.execution_report_json).stem,
+        phase="plan",
+    )
+    _print_cleanup_report(report)
+    for kind, path in paths.items():
+        print(f"{kind}: {path}")
+    return 0
+
+
+def _run_cleanup_execute(args: argparse.Namespace) -> int:
+    if not args.yes:
+        print("Refusing cleanup-execute without --yes. Review cleanup-plan first.", file=sys.stderr)
+        return 2
+    cfg = load_config(args.config, dry_run=False)
+    try:
+        report = CleanupExecutor(cfg).execute(args.execution_report_json)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    paths = ReportGenerator(args.reports_dir).write_cleanup_all(
+        report,
+        execution_stem=Path(args.execution_report_json).stem,
+        phase="execution",
+    )
+    _print_cleanup_report(report)
+    for kind, path in paths.items():
+        print(f"{kind}: {path}")
+    return 0 if report.stats.relations_failed == 0 and report.stats.workspaces_failed == 0 else 1
+
+
+def _print_cleanup_report(report) -> None:
+    print(f"Cleanup mode: {report.mode}")
+    print(f"Source execution report: {report.source_execution_report}")
+    print("Relations:")
+    for row in report.relations:
+        print(
+            f"- {row.status}: {row.source_node_id or '?'} -> {row.target_node_id or '?'} "
+            f"({row.relation_type})"
+        )
+    print("Workspaces:")
+    for row in report.workspaces:
+        print(f"- {row.status}: {row.node_id or '?'} {row.workspace_name} [{row.original_status}]")
+    if report.files:
+        print("Uploaded files (informational):")
+        for row in report.files:
+            print(f"- {row.title} under parent {row.parent_node_id or '?'} [{row.original_status}]")
+    for warning in report.warnings:
+        print(f"Warning: {warning}")
 
 
 def _load_dotenv(path: str) -> None:

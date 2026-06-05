@@ -251,6 +251,13 @@ class CSClient:
             data={"rel_bw_id": int(rel_bw_id), "rel_type": rel_type or "child"},
         )
 
+    def delete_business_workspace_relation(self, bw_id: int, rel_bw_id: int, rel_type: str = "child") -> bool:
+        response = self._delete(
+            f"/api/v2/businessworkspaces/{bw_id}/relateditems/{rel_bw_id}",
+            params={"rel_type": rel_type or "child"},
+        )
+        return response.status_code in (200, 204)
+
     def relation_exists(self, bw_id: int, rel_bw_id: int, rel_type: str = "child") -> bool:
         for item in self.get_related_workspaces(bw_id, rel_type=rel_type):
             if _related_item_matches(item, int(rel_bw_id), rel_type or "child"):
@@ -362,6 +369,13 @@ class CSClient:
             )
         return "versioned" if response.status_code in (200, 201) else "failed"
 
+    def node_exists(self, node_id: int) -> bool:
+        return self.get_node(node_id) is not None
+
+    def delete_node(self, node_id: int) -> bool:
+        response = self._delete(f"/api/v2/nodes/{node_id}")
+        return response.status_code in (200, 204)
+
     def remap_file_location(self, location: str) -> str:
         if not self.ws_name_map:
             return location
@@ -421,6 +435,12 @@ class CSClient:
         response = self.session.post(f"{self.base}{path}", verify=self.cfg.ssl_verify, timeout=120, **kwargs)
         response.raise_for_status()
         return response.json()
+
+    def _delete(self, path: str, **kwargs: Any) -> requests.Response:
+        time.sleep(self.cfg.request_delay)
+        response = self.session.delete(f"{self.base}{path}", verify=self.cfg.ssl_verify, timeout=120, **kwargs)
+        response.raise_for_status()
+        return response
 
 
 def _related_item_matches(item: dict[str, Any], rel_bw_id: int, rel_type: str) -> bool:

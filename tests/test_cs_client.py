@@ -217,6 +217,7 @@ class RelatedSession:
         self.get_payload = get_payload or {"results": []}
         self.post_calls = []
         self.get_calls = []
+        self.delete_calls = []
 
     def get(self, url, **kwargs):
         self.get_calls.append((url, kwargs))
@@ -225,6 +226,10 @@ class RelatedSession:
     def post(self, url, **kwargs):
         self.post_calls.append((url, kwargs))
         return FakeResponse(201, {"results": {"ok": True}})
+
+    def delete(self, url, **kwargs):
+        self.delete_calls.append((url, kwargs))
+        return FakeResponse(204, {})
 
 
 def test_add_business_workspace_relation_posts_official_relateditems_form_data():
@@ -244,6 +249,27 @@ def test_relation_exists_checks_relateditems_before_duplicate_creation():
 
     assert client.relation_exists(3001, 3002, "child") is True
     assert client.relation_exists(3001, 3003, "child") is False
+
+
+def test_delete_business_workspace_relation_uses_official_relateditems_delete():
+    client = CSClient(make_config())
+    session = RelatedSession()
+    client.session = session
+
+    assert client.delete_business_workspace_relation(3001, 3002, "parent") is True
+
+    assert session.delete_calls[0][0] == "https://example/otcs/cs.exe/api/v2/businessworkspaces/3001/relateditems/3002"
+    assert session.delete_calls[0][1]["params"] == {"rel_type": "parent"}
+
+
+def test_delete_node_uses_node_id_only():
+    client = CSClient(make_config())
+    session = RelatedSession()
+    client.session = session
+
+    assert client.delete_node(3001) is True
+
+    assert session.delete_calls[0][0] == "https://example/otcs/cs.exe/api/v2/nodes/3001"
 
 
 def test_search_business_workspaces_by_name_parses_mocked_expanded_response_and_uses_cache():

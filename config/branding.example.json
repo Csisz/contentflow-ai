@@ -1,0 +1,11 @@
+{
+  "app_title": "ContentFlow AI",
+  "app_subtitle": "Migration Copilot",
+  "logo_mode": "default",
+  "logo_path": "",
+  "logo_url": "",
+  "primary_color": "#206a5d",
+  "secondary_color": "#20343a",
+  "header_style": "simple",
+  "auto_detect_from_content_server": false
+}

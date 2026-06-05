@@ -7,6 +7,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
+from .cleanup import CleanupReport
 from .import_engine import ImportExecutionReport
 from .models import Issue, PreflightReport
 
@@ -39,6 +40,21 @@ class ReportGenerator:
             "markdown": self.write_execution_markdown(report, f"{filename_stem}.md"),
             "csv": self.write_execution_csv(report, f"{filename_stem}.csv"),
             "xlsx": self.write_execution_xlsx(report, f"{filename_stem}.xlsx"),
+        }
+
+    def write_cleanup_all(
+        self,
+        report: CleanupReport,
+        *,
+        execution_stem: str,
+        phase: str,
+        timestamp: str | None = None,
+    ) -> dict[str, Path]:
+        timestamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename_stem = f"{execution_stem}_cleanup_{phase}_{timestamp}"
+        return {
+            "json": self.write_cleanup_json(report, f"{filename_stem}.json"),
+            "markdown": self.write_cleanup_markdown(report, f"{filename_stem}.md"),
         }
 
     def write_json(self, report: PreflightReport, filename: str) -> Path:
@@ -140,6 +156,91 @@ class ReportGenerator:
     def write_execution_json(self, report: ImportExecutionReport, filename: str) -> Path:
         path = self.output_dir / filename
         path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def write_cleanup_json(self, report: CleanupReport, filename: str) -> Path:
+        path = self.output_dir / filename
+        path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def write_cleanup_markdown(self, report: CleanupReport, filename: str) -> Path:
+        path = self.output_dir / filename
+        summary = report.stats.to_dict()
+        lines = [
+            f"# {report.project_name} - Cleanup Report",
+            "",
+            "## Summary",
+            "",
+            f"- **Mode:** {report.mode}",
+            f"- **Generated at:** {report.generated_at}",
+            f"- **Source execution report:** {report.source_execution_report}",
+            f"- **Relations removed:** {summary['relations_removed']}",
+            f"- **Relations failed:** {summary['relations_failed']}",
+            f"- **Workspaces deleted:** {summary['workspaces_deleted']}",
+            f"- **Workspaces failed:** {summary['workspaces_failed']}",
+            f"- **Skipped:** {summary['skipped']}",
+            "",
+            "## Relations",
+            "",
+            "| Row | Source | Source node id | Target | Target node id | Relation type | Status | Error |",
+            "|---:|---|---:|---|---:|---|---|---|",
+        ]
+        for row in report.relations:
+            lines.append(
+                "| {row} | {source} | {source_id} | {target} | {target_id} | {rel_type} | {status} | {error} |".format(
+                    row=row.row_index or "",
+                    source=_escape_table(row.source_workspace),
+                    source_id=row.source_node_id or "",
+                    target=_escape_table(row.target_workspace),
+                    target_id=row.target_node_id or "",
+                    rel_type=_escape_table(row.relation_type),
+                    status=row.status,
+                    error=_escape_table(row.error_message),
+                )
+            )
+        lines.extend([
+            "",
+            "## Workspaces",
+            "",
+            "| Row | Placeholder | Workspace name | Node id | Original status | Cleanup status | Error |",
+            "|---:|---|---|---:|---|---|---|",
+        ])
+        for row in report.workspaces:
+            lines.append(
+                "| {row} | {title} | {name} | {node_id} | {original} | {status} | {error} |".format(
+                    row=row.row_index or "",
+                    title=_escape_table(row.excel_title),
+                    name=_escape_table(row.workspace_name),
+                    node_id=row.node_id or "",
+                    original=row.original_status,
+                    status=row.status,
+                    error=_escape_table(row.error_message),
+                )
+            )
+        lines.extend([
+            "",
+            "## Uploaded Files",
+            "",
+            "| Row | Title | Parent node id | Original status | Note |",
+            "|---:|---|---:|---|---|",
+        ])
+        for row in report.files:
+            lines.append(
+                "| {row} | {title} | {parent} | {status} | {note} |".format(
+                    row=row.row_index or "",
+                    title=_escape_table(row.title),
+                    parent=row.parent_node_id or "",
+                    status=row.original_status,
+                    note=_escape_table(row.note),
+                )
+            )
+        if report.warnings:
+            lines.extend(["", "## Warnings", ""])
+            lines.extend(f"- {_escape_table(warning)}" for warning in report.warnings)
+        if report.stats.details:
+            lines.extend(["", "## Details", ""])
+            lines.extend(f"- {_escape_table(detail)}" for detail in report.stats.details)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
     def write_execution_markdown(self, report: ImportExecutionReport, filename: str) -> Path:

@@ -9,10 +9,13 @@ venv/
 
 # Local secrets/configs
 config/*.local.json
+config/branding.local.json
 config/*secret*.json
 *.local.json
 
 # Runtime output
+branding/*
+!branding/.gitkeep
 logs/
 reports/
 output/
